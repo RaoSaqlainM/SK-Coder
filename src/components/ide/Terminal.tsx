@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useIDEStore } from "@/store/ideStore";
-import { Trash2, Copy, Check, Cloud, RotateCcw, Smartphone } from "lucide-react";
+import { Trash2, Copy, Check, Cloud, RotateCcw, Smartphone, Plus, X } from "lucide-react";
 import type { TerminalType, FileNode } from "@/types/ide";
 import { runPython } from "@/lib/pyodideRunner";
 import { runJS } from "@/lib/jsRunner";
@@ -8,10 +8,12 @@ import { runViaPiston, langForExt, type CloudResult } from "@/lib/pistonRunner";
 import { buildHtmlPreview, buildReactPreview, findPreviewEntry, htmlToDataUrl } from "@/lib/previewBuilder";
 import { runSandboxCommand, runWorkspaceProject } from "@/lib/workspaceSandbox";
 import { isAndroid, isTermuxInstalled, runTermuxCommand } from "@/lib/termuxBridge";
+import { runViaWandbox, supportsWandbox } from "@/lib/wandboxRunner";
 import CloudShell from "@/components/ide/CloudShell";
 import TermuxSetup from "@/components/ide/TermuxSetup";
+import BackendTerminal from "@/components/ide/BackendTerminal";
 
-type TabKind = "local" | "cloud" | "termux";
+type TabKind = "local" | "server" | "cloud" | "termux";
 
 interface TerminalDef {
   id: TerminalType;
@@ -21,12 +23,15 @@ interface TerminalDef {
   hint?: string;
 }
 
+type AddedTerminal = { id: string; type: TerminalType; label: string };
+
 const TERMINALS: TerminalDef[] = [
   { id: "shell",      label: "Shell",    prompt: "$" },
   { id: "python",     label: "Python",   prompt: ">>>" },
   { id: "javascript", label: "JS",       prompt: ">" },
   { id: "cpp",        label: "C/C++",    prompt: "g++>",   cloudExt: "cpp",  hint: "Type code or open a .cpp file. Cloud compiler executes it." },
   { id: "node",       label: "Node",     prompt: "node>",                    hint: "Single-file JS runs locally. For npm/dev servers use Cloud Shell or Termux." },
+  { id: "java",       label: "Java",     prompt: "java>",                    hint: "Java files run with Wandbox. Use the Run action for multi-line source files." },
   { id: "bash",       label: "Bash",     prompt: "bash$",  cloudExt: "bash", hint: "Single bash script via cloud. Interactive shell needs Cloud Shell or Termux." },
   { id: "kali",       label: "Kali",     prompt: "kali#",                    hint: "Kali tools require a real Linux runtime. Use Cloud Shell or Termux." },
   { id: "gitbash",    label: "Git Bash", prompt: "git$",   cloudExt: "bash", hint: "Bash commands route through the cloud bash runner." },
@@ -78,7 +83,7 @@ function showCloudResult(result: CloudResult, addTerminalLine: ReturnType<typeof
 }
 
 export default function Terminal() {
-  const { terminalLines, addTerminalLine, clearTerminal, terminalType, setTerminalType, setPreviewUrl, setActivePanel, openFile, setEditorTarget } = useIDEStore();
+  const { terminalLines, addTerminalLine, clearTerminal, terminalType, setTerminalType, setPreviewUrl, setActivePanel, openFile, setEditorTarget, terminalBridgeCmd, setTerminalBridgeCmd } = useIDEStore();
   const bottomRef = useRef<HTMLDivElement>(null);
   const [history, setHistory] = useState<string[]>([]);
   const [hIdx, setHIdx] = useState(-1);
@@ -87,14 +92,62 @@ export default function Terminal() {
   const [lastRun, setLastRun] = useState<{ ext: string; source: string; label: string; filePath?: string } | null>(null);
   const [tabKind, setTabKind] = useState<TabKind>("local");
   const [termuxOk, setTermuxOk] = useState(false);
+  const [addedTerminals, setAddedTerminals] = useState<AddedTerminal[]>([]);
+  const [activeTerminalKey, setActiveTerminalKey] = useState(`default-${terminalType}`);
 
   useEffect(() => { isTermuxInstalled().then(setTermuxOk); }, [tabKind]);
+
+  useEffect(() => {
+    if (!addedTerminals.some((tab) => tab.id === activeTerminalKey)) setActiveTerminalKey(`default-${terminalType}`);
+  }, [activeTerminalKey, addedTerminals, terminalType]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [terminalLines]);
 
   const current = TERMINALS.find((t) => t.id === terminalType) || TERMINALS[0];
+  const terminalTabs = [
+    ...TERMINALS.map((terminal) => ({ key: `default-${terminal.id}`, terminal, closable: false })),
+    ...addedTerminals.map((terminal) => ({ key: terminal.id, terminal: { ...TERMINALS.find((item) => item.id === terminal.type)!, label: terminal.label }, closable: true }))
+  ];
+
+  const selectTerminal = (key: string, type: TerminalType) => {
+    setActiveTerminalKey(key);
+    setTerminalType(type);
+  };
+
+  const addTerminal = () => {
+    const id = `added-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const terminal = { id, type: terminalType, label: `${current.label} ${addedTerminals.length + 2}` };
+    setAddedTerminals((tabs) => [...tabs, terminal]);
+    setActiveTerminalKey(id);
+  };
+
+  const closeAddedTerminal = (id: string) => {
+    setAddedTerminals((tabs) => tabs.filter((tab) => tab.id !== id));
+    if (activeTerminalKey === id) setActiveTerminalKey(`default-${terminalType}`);
+  };
+
+  const runNodeSource = useCallback(async (source: string, filePath?: string) => {
+    const result = await runViaWandbox("js", source);
+    if (!result.offline) {
+      showCloudResult(result, addTerminalLine);
+      return;
+    }
+    addTerminalLine({ text: "Wandbox is unavailable. Running this standalone script in the browser.", type: "info" });
+    await runJS(source, (text, type) => addTerminalLine({ text, type: type === "error" ? "error" : "output", filePath }));
+    addTerminalLine({ text: "JavaScript completed", type: "success" });
+  }, [addTerminalLine]);
+
+  const runJavaSource = useCallback(async (source: string, filePath?: string) => {
+    const primary = await runViaWandbox("java", source);
+    if (!primary.offline) {
+      showCloudResult(primary, addTerminalLine);
+      return;
+    }
+    addTerminalLine({ text: "Wandbox is unavailable. Using the cloud compiler fallback.", type: "info" });
+    showCloudResult(await runViaPiston("java", source, "", filePath || "Main.java"), addTerminalLine);
+  }, [addTerminalLine]);
 
   const executeFile = useCallback(async (target: FileNode) => {
     const ext = extOf(target.name);
@@ -118,8 +171,13 @@ export default function Terminal() {
       return;
     }
     if (["js", "mjs", "cjs"].includes(ext)) {
-      await runJS(source, (s, t) => addTerminalLine({ text: s, type: t === "error" ? "error" : "output" }));
-      addTerminalLine({ text: "JavaScript completed", type: "success" });
+      addTerminalLine({ text: "Running Node.js with Wandbox...", type: "info" });
+      await runNodeSource(source, target.path);
+      return;
+    }
+    if (ext === "java") {
+      addTerminalLine({ text: "Running Java with Wandbox...", type: "info" });
+      await runJavaSource(source, target.path);
       return;
     }
     if (langForExt(ext)) {
@@ -128,14 +186,18 @@ export default function Terminal() {
       return;
     }
     addTerminalLine({ text: `No runner for .${ext}.`, type: "error" });
-  }, [addTerminalLine, setActivePanel, setPreviewUrl]);
+  }, [addTerminalLine, runJavaSource, runNodeSource, setActivePanel, setPreviewUrl]);
 
   const retryLast = useCallback(async () => {
     if (!lastRun || busy) return;
     setBusy(true);
     addTerminalLine({ text: `Retry ${lastRun.label}`, type: "input" });
     try {
-        if (langForExt(lastRun.ext)) showCloudResult(await runViaPiston(lastRun.ext, lastRun.source, "", lastRun.filePath || lastRun.label), addTerminalLine);
+        if (supportsWandbox(lastRun.ext)) {
+          if (lastRun.ext === "java") await runJavaSource(lastRun.source, lastRun.filePath);
+          else await runNodeSource(lastRun.source, lastRun.filePath);
+        }
+        else if (langForExt(lastRun.ext)) showCloudResult(await runViaPiston(lastRun.ext, lastRun.source, "", lastRun.filePath || lastRun.label), addTerminalLine);
       else addTerminalLine({ text: "Retry is available for the last cloud compile job.", type: "info" });
     } finally {
       setBusy(false);
@@ -189,7 +251,7 @@ export default function Terminal() {
       setBusy(true);
       setTerminalType("node");
       try {
-        await runWorkspaceProject(tree, (text, type = "output") => addTerminalLine({ text, type }), setPreviewUrl);
+        await runWorkspaceProject(tree, (text, type: "input" | "output" | "error" | "info" | "success" = "output") => addTerminalLine({ text, type }), setPreviewUrl);
         setActivePanel("preview");
       } catch (e) {
         addTerminalLine({ text: e instanceof Error ? e.message : String(e), type: "error" });
@@ -208,7 +270,7 @@ export default function Terminal() {
     if (isPackageCommand(command)) {
       setBusy(true);
       try {
-        await runSandboxCommand(command, parts.slice(1), useIDEStore.getState().fileTree, (text, type = "output") => addTerminalLine({ text, type }), setPreviewUrl);
+        await runSandboxCommand(command, parts.slice(1), useIDEStore.getState().fileTree, (text, type: "input" | "output" | "error" | "info" | "success" = "output") => addTerminalLine({ text, type }), setPreviewUrl);
       } catch (e) {
         addTerminalLine({ text: e instanceof Error ? e.message : String(e), type: "error" });
       } finally { setBusy(false); }
@@ -264,6 +326,18 @@ export default function Terminal() {
       finally { setBusy(false); }
       return;
     }
+    if (current.id === "node") {
+      setBusy(true);
+      setLastRun({ ext: "js", source: cmd, label: "Node input" });
+      try { await runNodeSource(cmd); }
+      catch (e) { addTerminalLine({ text: e instanceof Error ? e.message : String(e), type: "error" }); }
+      finally { setBusy(false); }
+      return;
+    }
+    if (current.id === "java") {
+      addTerminalLine({ text: "Open a .java file and select Run to compile multi-line Java source with Wandbox.", type: "info" });
+      return;
+    }
     if (current.cloudExt) {
       setBusy(true);
       try {
@@ -278,7 +352,18 @@ export default function Terminal() {
       return;
     }
     addTerminalLine({ text: `${command}: command not found. Type help.`, type: "error" });
-  }, [busy, current, addTerminalLine, clearTerminal, executeFile, setActivePanel, setPreviewUrl]);
+  }, [busy, current, addTerminalLine, clearTerminal, executeFile, runNodeSource, setActivePanel, setPreviewUrl]);
+
+  useEffect(() => {
+    if (!terminalBridgeCmd || busy) return;
+    const targetTab = terminalBridgeCmd.targetTab || "shell";
+    setTabKind("local");
+    setActivePanel("terminal");
+    setActiveTerminalKey(`default-${targetTab}`);
+    setTerminalType(targetTab);
+    setTerminalBridgeCmd(null);
+    void handleCommand(terminalBridgeCmd.cmd);
+  }, [busy, handleCommand, setActivePanel, setTerminalBridgeCmd, setTerminalType, terminalBridgeCmd]);
 
   const copyLast = useCallback(() => {
     const text = history[history.length - 1];
@@ -290,6 +375,7 @@ export default function Terminal() {
 
   const KIND_TABS: { id: TabKind; label: string; icon: any }[] = [
     { id: "local", label: "Local", icon: Cloud },
+    { id: "server", label: "Oracle Terminal", icon: Cloud },
     { id: "cloud", label: "Cloud Shell", icon: Cloud },
     { id: "termux", label: "Termux", icon: Smartphone },
   ];
@@ -309,19 +395,23 @@ export default function Terminal() {
       </div>
 
       {tabKind === "cloud" && <div className="flex-1 min-h-0"><CloudShell /></div>}
+      {tabKind === "server" && <div className="flex-1 min-h-0"><BackendTerminal /></div>}
       {tabKind === "termux" && <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin"><TermuxSetup /></div>}
       {tabKind === "local" && (
         <>
       <div className="flex items-center gap-1 px-1 border-b border-border shrink-0 overflow-x-auto no-scrollbar">
-        {TERMINALS.map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTerminalType(t.id)}
-            className={`px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap rounded-t transition-colors ${terminalType === t.id ? "bg-card text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}
-          >
-            {t.label}
-          </button>
+        {terminalTabs.map((tab) => (
+          <div key={tab.key} className={`flex items-center rounded-t transition-colors ${activeTerminalKey === tab.key ? "bg-card border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}>
+            <button
+              onClick={() => selectTerminal(tab.key, tab.terminal.id)}
+              className={`px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap ${activeTerminalKey === tab.key ? "text-foreground" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              {tab.terminal.label}
+            </button>
+            {tab.closable && <button type="button" aria-label={`Close ${tab.terminal.label}`} onClick={() => closeAddedTerminal(tab.key)} className="mr-1 rounded p-0.5 text-muted-foreground hover:bg-secondary hover:text-foreground"><X className="h-3 w-3" /></button>}
+          </div>
         ))}
+        <button type="button" aria-label="Add terminal" onClick={addTerminal} className="rounded p-1 text-muted-foreground hover:bg-secondary hover:text-foreground"><Plus className="h-3.5 w-3.5" /></button>
         <div className="ml-auto flex items-center gap-1 px-1">
           {lastRun && langForExt(lastRun.ext) && (
             <button onClick={retryLast} disabled={busy} className="p-1 hover:bg-secondary rounded text-muted-foreground disabled:opacity-40" title="Retry last cloud run">

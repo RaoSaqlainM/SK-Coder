@@ -1,0 +1,2 @@
+import { Link } from "react-router-dom"
+export default function Guide() { return <main className="mx-auto max-w-3xl p-6 text-sm leading-7 text-foreground"><Link to="/" className="text-primary">← Back to SK Coder</Link><h1 className="mt-6 text-3xl font-semibold">SK Coder User Guide</h1><p>Create or import files from the top bar, select a file in Explorer, then use Run to preview HTML or execute supported browser runtimes. Source files remain in browser storage. Backend execution workspaces are temporary and should be removed within 72 hours.</p></main> }

@@ -1,11 +1,11 @@
 import { useRef, useCallback, useEffect } from "react";
-import Editor, { OnMount } from "@monaco-editor/react";
+import Editor, { OnMount, OnValidate } from "@monaco-editor/react";
 import { useIDEStore } from "@/store/ideStore";
 import { FileCode } from "lucide-react";
 import { chat, isKeyValidated } from "@/lib/aiClient";
 
 export default function CodeEditor() {
-  const { openTabs, activeTabId, updateTabContent, updateFileContent, settings, addTerminalLine, editorTarget } = useIDEStore();
+  const { openTabs, activeTabId, updateTabContent, updateFileContent, settings, addTerminalLine, editorTarget, setErrors } = useIDEStore();
   const editorRef = useRef<any>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAnalyzed = useRef<string>("");
@@ -15,6 +15,19 @@ export default function CodeEditor() {
     editorRef.current = editor;
     editor.focus();
   }, []);
+
+  const handleValidate: OnValidate = useCallback((markers) => {
+    if (!activeTab) return;
+    const diagnostics = markers.map((marker, index) => ({
+      id: `${activeTab.path}-${marker.startLineNumber}-${marker.startColumn}-${index}`,
+      file: activeTab.path,
+      line: marker.startLineNumber,
+      col: marker.startColumn,
+      message: marker.message,
+      severity: marker.severity >= 8 ? "error" as const : marker.severity >= 4 ? "warning" as const : "info" as const
+    }));
+    setErrors([...useIDEStore.getState().errors.filter((error) => error.file !== activeTab.path), ...diagnostics]);
+  }, [activeTab, setErrors]);
 
   const handleChange = useCallback(
     (value: string | undefined) => {
@@ -83,6 +96,7 @@ export default function CodeEditor() {
         theme={settings.editor.theme}
         onChange={handleChange}
         onMount={handleEditorMount}
+        onValidate={handleValidate}
         options={{
           fontSize: settings.editor.fontSize,
           fontFamily: settings.editor.fontFamily,

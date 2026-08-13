@@ -1,0 +1,2 @@
+import { Link } from "react-router-dom"
+export default function Terms() { return <main className="mx-auto max-w-3xl p-6 text-sm leading-7 text-foreground"><Link to="/" className="text-primary">← Back to SK Coder</Link><h1 className="mt-6 text-3xl font-semibold">Terms of Service</h1><p>You are responsible for the source code, credentials, and execution requests submitted through SK Coder. Do not use the service to execute unlawful, abusive, or unauthorized workloads.</p></main> }

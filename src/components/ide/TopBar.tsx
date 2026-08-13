@@ -4,6 +4,7 @@ import { Bot, ChevronRight, Download, FilePlus, FolderOpen, HelpCircle, Menu, Mo
 import { useIDEStore } from "@/store/ideStore";
 import { filesFromFileList, pickedFilesToTree } from "@/lib/importProject";
 import { runWorkspace } from "@/lib/runWorkspace";
+import { storeImportedWorkspace } from "@/lib/storageManager";
 
 import NewFileDialog from "./NewFileDialog";
 
@@ -12,7 +13,7 @@ export default function TopBar() {
   const {
     isRunning, setIsRunning, toggleSidebar, addTerminalLine, setActivePanel,
     openFile, setFileTree, fileTree, openTabs, activeTabId, setPreviewUrl,
-    downloadProject, setAiChatOpen, setTerminalType,
+    downloadProject, setAiChatOpen, setTerminalType, settings,
   } = useIDEStore();
   const [newFileOpen, setNewFileOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
@@ -24,10 +25,12 @@ export default function TopBar() {
     const { tree, firstOpenable } = await pickedFilesToTree(picked, (text, type = "info") => addTerminalLine({ text, type }));
     if (!tree.length) return;
     const current = useIDEStore.getState().fileTree;
-    setFileTree([...current, ...tree]);
+    const nextTree = [...current, ...tree];
+    setFileTree(nextTree);
     if (firstOpenable) openFile(firstOpenable);
     addTerminalLine({ text: `Opened ${picked.length} item(s) into workspace`, type: "success" });
-  }, [addTerminalLine, openFile, setFileTree]);
+    void storeImportedWorkspace(nextTree, settings.backend.url, settings.backend.enabled).then((result) => addTerminalLine({ text: result.message, type: result.target === "server" ? "info" : "success" }));
+  }, [addTerminalLine, openFile, setFileTree, settings.backend.enabled, settings.backend.url]);
 
   const handleFileInput = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
@@ -68,10 +71,10 @@ export default function TopBar() {
     <>
       <div className="flex items-center justify-between bg-card border-b border-border h-11 px-2 shrink-0">
         <div className="flex items-center gap-1 min-w-0 flex-1">
-          <button onClick={toggleSidebar} className="p-2 rounded hover:bg-secondary transition-colors shrink-0" aria-label="Toggle sidebar">
+          <button onClick={toggleSidebar} className="flex h-11 w-11 items-center justify-center rounded hover:bg-secondary transition-colors shrink-0" aria-label="Toggle sidebar">
             <Menu className="w-4 h-4 text-muted-foreground" />
           </button>
-          <div className="flex items-center text-xs text-muted-foreground overflow-hidden min-w-0">
+          <div className="hidden sm:flex items-center text-xs text-muted-foreground overflow-hidden min-w-0">
             {breadcrumb.length > 0 ? breadcrumb.map((part, i) => (
               <span key={i} className="flex items-center shrink-0">
                 {i > 0 && <ChevronRight className="w-3 h-3 mx-0.5 shrink-0 opacity-50" />}
@@ -81,22 +84,22 @@ export default function TopBar() {
           </div>
         </div>
         <div className="flex items-center gap-1 shrink-0">
-          <button onClick={handleOpen} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors" aria-label="Open file or archive">
+          <button onClick={handleOpen} className="flex h-11 items-center gap-1.5 px-2.5 text-xs font-medium rounded bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors" aria-label="Open file or archive">
             <FolderOpen className="w-3.5 h-3.5" />
             <span>Open</span>
           </button>
           <button
             onClick={handleRun}
-            className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded transition-all ${isRunning ? "bg-destructive text-destructive-foreground" : "bg-primary text-primary-foreground hover:bg-primary/90"}`}
+            className={`flex h-11 w-11 items-center justify-center rounded transition-all ${isRunning ? "bg-destructive text-destructive-foreground" : "bg-primary text-primary-foreground hover:bg-primary/90"}`}
           >
             {isRunning ? <Square className="w-3 h-3" /> : <Play className="w-3 h-3" />}
             <span className="hidden sm:inline">{isRunning ? "Stop" : "Run"}</span>
           </button>
-          <button onClick={() => setAiChatOpen(true)} className="p-2 rounded hover:bg-secondary transition-colors" aria-label="Code analyzer">
+          <button onClick={() => setAiChatOpen(true)} className="flex h-11 w-11 items-center justify-center rounded hover:bg-secondary transition-colors" aria-label="Code analyzer">
             <Bot className="w-4 h-4 text-primary" />
           </button>
           <div className="relative">
-            <button onClick={() => setMenuOpen((v) => !v)} className="p-2 rounded hover:bg-secondary transition-colors" aria-label="Menu">
+            <button onClick={() => setMenuOpen((v) => !v)} className="flex h-11 w-11 items-center justify-center rounded hover:bg-secondary transition-colors" aria-label="Menu">
               <MoreVertical className="w-4 h-4 text-muted-foreground" />
             </button>
             {menuOpen && (

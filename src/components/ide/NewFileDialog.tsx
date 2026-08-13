@@ -18,9 +18,11 @@ export default function NewFileDialog({ open, onClose, parentPath }: Props) {
 
   if (!open) return null;
 
+  const buildPath = (name: string) => parentPath ? `${parentPath.replace(/\/$/, "")}/${name}` : `/${name}`;
+
   const handleCreateFromTemplate = (name: string, ext: string, template: string) => {
     const fileName = ext ? `untitled${ext}` : name;
-    const path = parentPath ? `${parentPath}/${fileName}` : fileName;
+    const path = buildPath(fileName);
     const node = {
       id: generateId(),
       name: fileName,
@@ -36,14 +38,14 @@ export default function NewFileDialog({ open, onClose, parentPath }: Props) {
 
   const handleCreateCustom = () => {
     if (!customName.trim()) return;
-    const path = parentPath ? `${parentPath}/${customName}` : customName;
+    const path = buildPath(customName.trim());
     const node = {
       id: generateId(),
-      name: customName,
+      name: customName.trim(),
       type: "file" as const,
       path,
       content: "",
-      language: getLanguageFromExtension(customName),
+      language: getLanguageFromExtension(customName.trim()),
     };
     addFileNode(parentPath, node);
     openFile(node);
@@ -52,10 +54,11 @@ export default function NewFileDialog({ open, onClose, parentPath }: Props) {
 
   const handleCreateFolder = () => {
     if (!customName.trim()) return;
-    const path = parentPath ? `${parentPath}/${customName}` : customName;
+    const folderName = customName.trim();
+    const path = buildPath(folderName);
     addFileNode(parentPath, {
       id: generateId(),
-      name: customName,
+      name: folderName,
       type: "folder",
       path,
       children: [],
