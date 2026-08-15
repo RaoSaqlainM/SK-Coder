@@ -1,17 +1,15 @@
-import { lazy, Suspense, useRef, useCallback, useEffect, useState } from "react";
-import type { OnMount, OnValidate } from "@monaco-editor/react";
-import type { editor } from "monaco-editor";
+import { useRef, useCallback, useEffect } from "react";
+import Editor, { OnMount, OnValidate } from "@monaco-editor/react";
 import { useIDEStore } from "@/store/ideStore";
 import { FileCode } from "lucide-react";
 import { chat, isKeyValidated } from "@/lib/aiClient";
 
 export default function CodeEditor() {
   const { openTabs, activeTabId, updateTabContent, updateFileContent, settings, addTerminalLine, editorTarget, setErrors } = useIDEStore();
-  const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+  const editorRef = useRef<any>(null);
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const lastAnalyzed = useRef<string>("");
   const activeTab = openTabs.find((t) => t.id === activeTabId);
-  const [enhancedEditor, setEnhancedEditor] = useState(false);
 
   const handleEditorMount: OnMount = useCallback((editor) => {
     editorRef.current = editor;
@@ -58,12 +56,10 @@ export default function CodeEditor() {
         if (reply && !/^ok\b/i.test(reply.trim())) {
           addTerminalLine({ text: `[AI] ${activeTab.name}: ${reply.slice(0, 300)}`, type: "info" });
         }
-      } catch {
-        lastAnalyzed.current = "";
-      }
+      } catch {}
     }, 3000);
     return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [activeTab, activeTab?.content, activeTab?.path, activeTab?.name, settings.ai.autoAnalyze, addTerminalLine]);
+  }, [activeTab?.content, activeTab?.path, activeTab?.name, settings.ai.autoAnalyze, addTerminalLine]);
 
   useEffect(() => {
     if (!editorRef.current || !activeTab || !editorTarget || editorTarget.path !== activeTab.path) return;
@@ -71,7 +67,7 @@ export default function CodeEditor() {
     editorRef.current.setPosition(position);
     editorRef.current.revealPositionInCenter(position);
     editorRef.current.focus();
-  }, [activeTab, activeTab?.path, editorTarget]);
+  }, [activeTab?.path, editorTarget]);
 
 
   if (!activeTab) {
@@ -90,26 +86,9 @@ export default function CodeEditor() {
     );
   }
 
-  const MonacoEditor = lazy(() => import("@monaco-editor/react"));
-
-  if (!enhancedEditor) {
-    return <div className="relative h-full w-full bg-editor-bg">
-      <textarea
-        aria-label="Editor content"
-        value={activeTab.content}
-        onChange={(event) => handleChange(event.target.value)}
-        spellCheck={false}
-        className="h-full w-full resize-none bg-editor-bg px-4 pb-4 pt-12 font-mono text-sm leading-6 text-foreground outline-none"
-        style={{ fontSize: settings.editor.fontSize, fontFamily: settings.editor.fontFamily, tabSize: settings.editor.tabSize }}
-      />
-      <button type="button" onClick={() => setEnhancedEditor(true)} className="absolute right-3 top-2 min-h-9 rounded border border-border bg-card px-2.5 text-xs font-medium text-muted-foreground hover:bg-secondary hover:text-foreground">Enable enhanced editor</button>
-    </div>;
-  }
-
   return (
     <div className="h-full w-full">
-      <Suspense fallback={<div className="h-full bg-editor-bg" />}>
-      <MonacoEditor
+      <Editor
         key={activeTab.id}
         height="100%"
         language={activeTab.language}
@@ -159,7 +138,6 @@ export default function CodeEditor() {
           snippetSuggestions: "top",
         }}
       />
-      </Suspense>
     </div>
   );
 }

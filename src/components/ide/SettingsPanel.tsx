@@ -96,17 +96,17 @@ export default function SettingsPanel() {
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Theme</Label>
-            <Select value={editor.theme} onValueChange={(v) => { if (v === "vs-dark" || v === "vs-light" || v === "hc-black") updateEditor({ theme: v }); }}>
+            <Select value={editor.theme} onValueChange={(v) => updateEditor({ theme: v as any })}>
               <SelectTrigger className="h-9 text-xs mt-1"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="vs-dark">Dark</SelectItem>
-                <SelectItem value="vs-light">Light</SelectItem>
+                <SelectItem value="light">Light</SelectItem>
               </SelectContent>
             </Select>
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Cursor Style</Label>
-            <Select value={editor.cursorStyle} onValueChange={(v) => { if (v === "line" || v === "block" || v === "underline") updateEditor({ cursorStyle: v }); }}>
+            <Select value={editor.cursorStyle} onValueChange={(v) => updateEditor({ cursorStyle: v as any })}>
               <SelectTrigger className="h-9 text-xs mt-1"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="line">Line</SelectItem>
@@ -117,7 +117,7 @@ export default function SettingsPanel() {
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Line Numbers</Label>
-            <Select value={editor.lineNumbers} onValueChange={(v) => { if (v === "on" || v === "off" || v === "relative") updateEditor({ lineNumbers: v }); }}>
+            <Select value={editor.lineNumbers} onValueChange={(v) => updateEditor({ lineNumbers: v as any })}>
               <SelectTrigger className="h-9 text-xs mt-1"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="on">On</SelectItem>
@@ -128,7 +128,7 @@ export default function SettingsPanel() {
           </div>
           <div>
             <Label className="text-xs text-muted-foreground">Whitespace</Label>
-            <Select value={editor.renderWhitespace} onValueChange={(v) => { if (v === "none" || v === "boundary" || v === "selection" || v === "all") updateEditor({ renderWhitespace: v }); }}>
+            <Select value={editor.renderWhitespace} onValueChange={(v) => updateEditor({ renderWhitespace: v as any })}>
               <SelectTrigger className="h-9 text-xs mt-1"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="none">None</SelectItem>
@@ -155,7 +155,7 @@ export default function SettingsPanel() {
         <div className="p-4 space-y-5">
           <div>
             <Label className="text-xs text-muted-foreground">Default Viewport</Label>
-            <Select value={preview.viewport} onValueChange={(v) => { if (v === "mobile" || v === "tablet" || v === "desktop") updatePreview({ viewport: v }); }}>
+            <Select value={preview.viewport} onValueChange={(v) => updatePreview({ viewport: v as any })}>
               <SelectTrigger className="h-9 text-xs mt-1"><SelectValue /></SelectTrigger>
               <SelectContent>
                 <SelectItem value="mobile">Mobile (375px)</SelectItem>

@@ -1,5 +1,5 @@
 import { useIDEStore } from "@/store/ideStore";
-import { FolderOpen, Code, Eye, TerminalSquare, Settings, GitBranch } from "lucide-react";
+import { FolderOpen, Code, Eye, TerminalSquare, Settings } from "lucide-react";
 import type { ActivePanel } from "@/types/ide";
 import { cn } from "@/lib/utils";
 
@@ -8,7 +8,6 @@ const navItems: { panel: ActivePanel; icon: typeof Code; label: string }[] = [
   { panel: "editor", icon: Code, label: "Editor" },
   { panel: "preview", icon: Eye, label: "Preview" },
   { panel: "terminal", icon: TerminalSquare, label: "Terminal" },
-  { panel: "git", icon: GitBranch, label: "Git" },
   { panel: "settings", icon: Settings, label: "Settings" },
 ];
 

@@ -8,7 +8,6 @@ import { useIDEStore } from "@/store/ideStore";
 import type { FileNode } from "@/types/ide";
 import { cn } from "@/lib/utils";
 import NewFileDialog from "./NewFileDialog";
-import { filesFromDataTransfer } from "@/lib/importProject";
 
 function getFileIcon(name: string) {
   const ext = name.split(".").pop()?.toLowerCase() || "";
@@ -160,7 +159,6 @@ export default function FileExplorer() {
   const { fileTree, searchQuery, setSearchQuery } = useIDEStore();
   const [showNewFile, setShowNewFile] = useState(false);
   const [showSearch, setShowSearch] = useState(false);
-  const [dragOver, setDragOver] = useState(false);
 
   const filterTree = useCallback((nodes: FileNode[], query: string): FileNode[] => {
     if (!query) return nodes;
@@ -179,7 +177,7 @@ export default function FileExplorer() {
   const displayTree = searchQuery ? filterTree(fileTree, searchQuery) : fileTree;
 
   return (
-    <div className="h-full flex flex-col bg-sidebar" onDragEnter={(event) => { event.preventDefault(); setDragOver(true); }} onDragOver={(event) => event.preventDefault()} onDragLeave={(event) => { if (event.currentTarget === event.target) setDragOver(false); }} onDrop={(event) => { event.preventDefault(); setDragOver(false); void filesFromDataTransfer(event.dataTransfer).then((files) => { if (files.length) document.dispatchEvent(new CustomEvent("sk-coder-import", { detail: files })); }); }}>
+    <div className="h-full flex flex-col bg-sidebar">
         <div className="flex min-h-11 items-center justify-between px-3 border-b border-sidebar-border shrink-0">
         <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">Explorer</span>
         <div className="flex items-center gap-0.5">
@@ -209,12 +207,12 @@ export default function FileExplorer() {
           />
         </div>
       )}
-      <div className={`flex-1 overflow-y-auto scrollbar-thin py-0.5 ${dragOver ? "ring-2 ring-inset ring-primary bg-primary/5" : ""}`}>
+      <div className="flex-1 overflow-y-auto scrollbar-thin py-0.5">
         {displayTree.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-xs px-4 text-center gap-3 py-8">
             <Folder className="w-10 h-10 opacity-30" />
             <p className="font-medium">No files yet</p>
-            <p className="text-[11px] opacity-70">Open, drop a project, or create a new file</p>
+            <p className="text-[11px] opacity-70">Open a project or create a new file</p>
           </div>
         ) : (
           displayTree

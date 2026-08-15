@@ -77,9 +77,7 @@ export default function PreviewPane() {
       else await navigator.clipboard.writeText(text);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
-    } catch {
-      return;
-    }
+    } catch {}
   }, [previewSrc, activeTab?.name]);
 
   return (

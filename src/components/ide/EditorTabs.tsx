@@ -36,7 +36,6 @@ export default function EditorTabs() {
           <button
             className="ml-0.5 p-0.5 rounded hover:bg-secondary/80 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
             onClick={(e) => handleClose(e, tab.id)}
-            aria-label={`Close ${tab.name}`}
           >
             <X className="w-3 h-3" />
           </button>

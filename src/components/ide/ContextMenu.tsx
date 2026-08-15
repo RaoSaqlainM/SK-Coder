@@ -1,13 +1,11 @@
 import { useIDEStore } from "@/store/ideStore";
-import { Play, Trash2, FileText, Copy, PencilLine, Info, FilePlus, Share2, TerminalSquare, type LucideIcon } from "lucide-react";
+import { Play, Trash2, FileText, Copy, PencilLine, Info, FilePlus, Share2, TerminalSquare } from "lucide-react";
 import { useState, useCallback } from "react";
 import NewFileDialog from "./NewFileDialog";
 import { nodeToZipBlob, shareBlobOrDownload, shareTextOrDownload } from "@/lib/shareProject";
 import { runWorkspace } from "@/lib/runWorkspace";
 import type { FileNode } from "@/types/ide";
 import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
-
-type MenuItem = { label: string; icon: LucideIcon; action: () => void; danger?: boolean };
 
 export default function ContextMenu() {
   const {
@@ -65,7 +63,7 @@ export default function ContextMenu() {
     close();
   };
 
-  const items: MenuItem[] = [
+  const items = [
     ...(node.type === "file" ? [{ label: "Open", icon: FileText, action: () => { openFile(node); close(); } }] : []),
     { label: node.type === "file" ? "Run / Preview" : "Open via Runner", icon: Play, action: handleRun },
     ...(node.type === "folder" ? [
@@ -120,7 +118,7 @@ export default function ContextMenu() {
               />
             </div>
           ) : items.map((item, i) => (
-            <button key={i} onClick={item.action} className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs transition-colors ${item.danger ? "text-destructive hover:bg-destructive/10" : "text-popover-foreground hover:bg-accent"}`}>
+            <button key={i} onClick={item.action} className={`w-full flex items-center gap-2.5 px-3 py-2 text-xs transition-colors ${(item as any).danger ? "text-destructive hover:bg-destructive/10" : "text-popover-foreground hover:bg-accent"}`}>
               <item.icon className="w-4 h-4" />
               {item.label}
             </button>

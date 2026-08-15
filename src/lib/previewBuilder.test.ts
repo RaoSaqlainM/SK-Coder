@@ -7,9 +7,4 @@ describe("preview builder", () => {
     expect(html).toContain("sk-coder-preview")
     expect(html.indexOf("sk-coder-preview")).toBeLessThan(html.indexOf("throw new Error"))
   })
-
-  it("inlines imported binary assets referenced by an HTML workspace file", () => {
-    const html = buildHtmlPreview({ id: "index", name: "index.html", path: "/index.html", type: "file", content: "<img src=\"assets/logo.png\">" }, [{ id: "asset", name: "logo.png", path: "/assets/logo.png", type: "file", content: "AA==", encoding: "base64", mimeType: "image/png" }])
-    expect(html).toContain("data:image/png;base64,AA==")
-  })
 })

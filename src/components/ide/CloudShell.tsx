@@ -3,7 +3,7 @@ import { Terminal as XTerminal } from "xterm";
 import { FitAddon } from "xterm-addon-fit";
 import { WebLinksAddon } from "xterm-addon-web-links";
 import "xterm/css/xterm.css";
-import { Loader2, ExternalLink, LogOut, Power, Cloud, Copy, Check } from "lucide-react";
+import { Loader2, ExternalLink, LogOut, Power, Cloud } from "lucide-react";
 import { clearGithubToken, fetchGithubUser, getGithubToken, pollForToken, startDeviceFlow } from "@/lib/githubAuth";
 import { buildWebTerminalUrl, getCodespace, listCodespaces, startCodespace, waitUntilAvailable, type Codespace } from "@/lib/codespacesClient";
 
@@ -18,7 +18,6 @@ export default function CloudShell() {
   const [busy, setBusy] = useState(false);
   const [deviceCode, setDeviceCode] = useState<{ user_code: string; verification_uri: string } | null>(null);
   const [status, setStatus] = useState("");
-  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!containerRef.current) return;
@@ -40,7 +39,7 @@ export default function CloudShell() {
     term.writeln("Sign in with GitHub to attach to your Codespace.");
     term.writeln("Each user pays $0 — Codespaces uses your free 60 hours/month.");
     term.writeln("");
-    const onResize = () => { try { fit.fit(); } catch { return; } };
+    const onResize = () => { try { fit.fit(); } catch {} };
     window.addEventListener("resize", onResize);
     return () => { window.removeEventListener("resize", onResize); term.dispose(); termRef.current = null; };
   }, []);
@@ -59,6 +58,7 @@ export default function CloudShell() {
       const dc = await startDeviceFlow();
       setDeviceCode({ user_code: dc.user_code, verification_uri: dc.verification_uri });
       log(`Open ${dc.verification_uri} and enter code: ${dc.user_code}`, "33");
+      window.open(dc.verification_uri, "_blank", "noopener");
       const t = await pollForToken(dc.device_code, dc.interval, dc.expires_in, (s) => setStatus(`Waiting for approval... ${s}s left`));
       setToken(t);
       setDeviceCode(null);
@@ -104,18 +104,12 @@ export default function CloudShell() {
         current = await getCodespace(token, cs.name);
       }
       setActive(current);
-      setStatus("Codespace ready. Use the in-panel connection link when you are ready to continue.");
-      log(`Ready. Connection link is available in this panel.`, "32");
+      log(`Ready. Opening web terminal...`, "32");
+      log(`If the new tab is blocked, click the link below.`, "90");
+      window.open(buildWebTerminalUrl(current), "_blank", "noopener");
     } catch (e) {
       log(e instanceof Error ? e.message : String(e), "31");
-    } finally { setBusy(false); }
-  };
-
-  const copyConnectionUrl = async () => {
-    if (!active) return;
-    await navigator.clipboard.writeText(buildWebTerminalUrl(active));
-    setCopied(true);
-    window.setTimeout(() => setCopied(false), 1500);
+    } finally { setBusy(false); setStatus(""); }
   };
 
   return (
@@ -167,25 +161,10 @@ export default function CloudShell() {
       {token && codespaces.length === 0 && !busy && (
         <div className="px-3 py-2 text-[11px] text-muted-foreground border-b border-border">
           No codespaces yet. Create one at{" "}
-          <a href="https://github.com/codespaces/new" className="text-primary underline">github.com/codespaces/new</a>, then tap Refresh.
+          <a href="https://github.com/codespaces/new" target="_blank" rel="noopener noreferrer" className="text-primary underline">github.com/codespaces/new</a>, then tap Refresh.
         </div>
       )}
       {status && <div className="px-3 py-1 text-[11px] text-muted-foreground border-b border-border">{status}</div>}
-      {active && (
-        <div className="px-3 py-2 border-b border-border bg-success/10 text-xs space-y-2">
-          <div className="font-medium text-success">{active.display_name || active.name} is ready.</div>
-          <div className="text-muted-foreground">This workspace remains in SK Coder. The GitHub-hosted terminal URL is available to copy or follow manually; it is never opened automatically.</div>
-          <div className="flex items-center gap-2">
-            <input readOnly value={buildWebTerminalUrl(active)} aria-label="Codespace connection URL" className="min-w-0 flex-1 rounded border border-border bg-background/60 px-2 py-1 font-mono text-[10px] text-foreground" />
-            <button type="button" onClick={() => void copyConnectionUrl()} className="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground" aria-label="Copy Codespace connection URL">
-              {copied ? <Check className="h-3.5 w-3.5 text-success" /> : <Copy className="h-3.5 w-3.5" />}
-            </button>
-            <a href={buildWebTerminalUrl(active)} className="shrink-0 rounded p-1.5 text-muted-foreground hover:bg-secondary hover:text-foreground" aria-label="Follow Codespace connection URL">
-              <ExternalLink className="h-3.5 w-3.5" />
-            </a>
-          </div>
-        </div>
-      )}
       <div ref={containerRef} className="flex-1 min-h-0 px-2 py-1" />
     </div>
   );
