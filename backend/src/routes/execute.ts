@@ -1,60 +1,61 @@
 import { Router } from "express"
-import {
-  executePython, executeNode, executeCpp, executeJava,
-  executeRust, executeGo, executeShell, checkRuntime,
-} from "../lib/executor"
+import { createWorkspaceSession, runCodeInWorkspace, runWorkspaceCommand, syncWorkspaceFiles, workspaceStatus } from "../lib/sessionManager"
 
 const router = Router()
 
-router.post("/execute", async (req, res) => {
-  const { language, code, cwd } = req.body as { language: string; code: string; cwd?: string }
+router.get("/runtimes", async (_req, res) => {
+  const status = await workspaceStatus()
+  res.json({ runtimes: ["node", "python", "bash", "java", "c", "cpp", "rust", "go"].map((name) => ({ name, available: status.ready })), status })
+})
 
-  if (!language || code === undefined || code === null) {
-    res.status(400).json({ error: "language and code are required" })
-    return
-  }
-
-  const trimmed = String(code)
-  if (!trimmed.trim()) {
-    res.json({ stdout: "", stderr: "", exitCode: 0, executionTime: 0 })
-    return
-  }
-
+router.post("/sessions", async (_req, res) => {
   try {
-    let result
-    switch (language.toLowerCase()) {
-      case "python": case "python3": result = await executePython(trimmed); break
-      case "node": case "nodejs": case "javascript": result = await executeNode(trimmed); break
-      case "cpp": case "c++": result = await executeCpp(trimmed, "cpp"); break
-      case "c": result = await executeCpp(trimmed, "c"); break
-      case "java": result = await executeJava(trimmed); break
-      case "rust": result = await executeRust(trimmed); break
-      case "go": result = await executeGo(trimmed); break
-      case "bash": case "shell": case "sh":
-        result = await executeShell(trimmed, cwd || process.env["HOME"] || "/tmp")
-        break
-      default:
-        res.status(400).json({ error: `Language '${language}' is not supported. Supported: python, node, cpp, c, java, rust, go, bash` })
-        return
-    }
-    res.json(result)
-  } catch (e) {
-    res.status(500).json({ error: String(e), stdout: "", stderr: String(e), exitCode: 1, executionTime: 0 })
+    const session = await createWorkspaceSession()
+    res.status(201).json({ id: session.id, cwd: "/", expiresInHours: 72 })
+  } catch (error) {
+    res.status(503).json({ error: error instanceof Error ? error.message : "Session service unavailable." })
   }
 })
 
-router.get("/execute/runtimes", async (_req, res) => {
-  const runtimes = await Promise.all([
-    checkRuntime("python3").then((ok) => ({ name: "python3", available: ok })),
-    checkRuntime("node").then((ok) => ({ name: "node", available: ok })),
-    checkRuntime("gcc").then((ok) => ({ name: "gcc", available: ok })),
-    checkRuntime("g++").then((ok) => ({ name: "g++", available: ok })),
-    checkRuntime("javac").then((ok) => ({ name: "javac", available: ok })),
-    checkRuntime("java").then((ok) => ({ name: "java", available: ok })),
-    checkRuntime("rustc").then((ok) => ({ name: "rustc", available: ok })),
-    checkRuntime("go").then((ok) => ({ name: "go", available: ok })),
-  ])
-  res.json({ runtimes })
+router.post("/sessions/:id/command", async (req, res) => {
+  const { command, cwd } = req.body as { command?: string; cwd?: string }
+  if (!command?.trim()) {
+    res.status(400).json({ error: "command is required" })
+    return
+  }
+  try {
+    res.json(await runWorkspaceCommand(req.params.id, command, cwd || "/"))
+  } catch (error) {
+    res.status(400).json({ stdout: "", stderr: error instanceof Error ? error.message : "Command failed.", exitCode: 1, executionTime: 0, error: "command-failed" })
+  }
+})
+
+router.post("/sessions/:id/files", async (req, res) => {
+  const { files } = req.body as { files?: { path?: unknown; content?: unknown }[] }
+  if (!Array.isArray(files)) {
+    res.status(400).json({ error: "files must be an array" })
+    return
+  }
+  try {
+    await syncWorkspaceFiles(req.params.id, files.map((file) => ({ path: String(file.path ?? ""), content: String(file.content ?? "") })))
+    res.status(204).end()
+  } catch (error) {
+    res.status(400).json({ error: error instanceof Error ? error.message : "Workspace synchronization failed." })
+  }
+})
+
+router.post("/execute", async (req, res) => {
+  const { language, code, sessionId } = req.body as { language?: string; code?: string; sessionId?: string }
+  if (!language || code === undefined) {
+    res.status(400).json({ error: "language and code are required" })
+    return
+  }
+  try {
+    const session = sessionId ? { id: sessionId } : await createWorkspaceSession()
+    res.json({ ...(await runCodeInWorkspace(session.id, language, code)), sessionId: session.id })
+  } catch (error) {
+    res.status(503).json({ stdout: "", stderr: error instanceof Error ? error.message : "Execution service unavailable.", exitCode: 1, executionTime: 0, error: "runtime-unavailable" })
+  }
 })
 
 export default router

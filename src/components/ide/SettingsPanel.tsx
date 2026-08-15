@@ -33,6 +33,10 @@ const NAV: NavItem[] = [
     icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>,
   },
   {
+    id: "runtime", label: "Runtime",
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="3"/><path d="M7 8h10M7 12h6M7 16h10"/></svg>,
+  },
+  {
     id: "about", label: "About",
     icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>,
   },
@@ -106,7 +110,7 @@ async function testApiKey(key: string): Promise<"valid" | "invalid" | "expired">
 export default function SettingsPanel() {
   const {
     settings, settingsTab, setSettingsTab, setShowSettings,
-    updateEditorSettings, updateAISettings,
+    updateEditorSettings, updateAISettings, updateSettings,
     updateGithubSettings, updatePreviewSettings,
   } = useIDEStore()
 
@@ -384,6 +388,29 @@ export default function SettingsPanel() {
                     <label>Auto Refresh on Save</label>
                     <Toggle checked={settings.preview.autoRefresh} onChange={(v) => updatePreviewSettings({ autoRefresh: v })} />
                   </div>
+                </div>
+              </>
+            )}
+
+            {settingsTab === "runtime" && (
+              <>
+                <div className="settings-section">
+                  <div className="settings-section-title">Oracle Execution Backend</div>
+                  <div className="settings-row">
+                    <label>Use execution backend</label>
+                    <Toggle checked={settings.backend.enabled} onChange={(enabled) => updateSettings({ backend: { ...settings.backend, enabled } })} />
+                  </div>
+                  <div className="settings-row col">
+                    <label>Backend origin</label>
+                    <input
+                      value={settings.backend.url}
+                      onChange={(e) => updateSettings({ backend: { ...settings.backend, url: e.target.value.trim() } })}
+                      placeholder="Same site /api proxy"
+                      inputMode="url"
+                      disabled={!settings.backend.enabled}
+                    />
+                  </div>
+                  <div className="settings-hint">Leave this blank when Nginx serves SK Coder and its `/api` route from the same domain. Otherwise enter your Oracle origin, such as `https://ide.example.com`.</div>
                 </div>
               </>
             )}

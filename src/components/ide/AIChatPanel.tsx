@@ -3,6 +3,7 @@ import ReactMarkdown from "react-markdown"
 import remarkGfm from "remark-gfm"
 import { useIDEStore } from "@/store/ideStore"
 import { sendAIMessage, buildSystemPrompt } from "@/lib/aiClient"
+import { buildAgentInstruction, extractAgentProposal, type AgentAction } from "@/lib/aiAgent"
 import type { AIChatMessage } from "@/types/ide"
 
 declare global {
@@ -60,9 +61,11 @@ async function sendViaPuter(prompt: string): Promise<string> {
 export default function AIChatPanel() {
   const {
     aiChatMessages, aiTyping, settings, addAIChatMessage, clearAIChat,
-    setAITyping, setShowSettings, setSettingsTab, getActiveFile, fileTree,
+    setAITyping, setShowSettings, setSettingsTab, getActiveFile, getFileContent, fileTree,
+    addFile, updateFileContent, deleteNode, setTerminalBridgeCmd, setActivePanel, refreshPreview,
   } = useIDEStore()
   const [input, setInput] = useState("")
+  const [proposals, setProposals] = useState<AgentAction[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
 
@@ -73,6 +76,41 @@ export default function AIChatPanel() {
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" })
   }, [aiChatMessages, aiTyping])
+
+  function deliverAIReply(reply: string) {
+    const proposal = extractAgentProposal(reply)
+    addAIChatMessage({ role: "assistant", content: proposal.message || "I prepared actions for your review." })
+    if (proposal.actions.length) setProposals((current) => [...current, ...proposal.actions])
+  }
+
+  function removeProposal(id: string) {
+    setProposals((current) => current.filter((item) => item.id !== id))
+  }
+
+  function approveProposal(action: AgentAction) {
+    if (action.type === "write") {
+      if (getFileContent(action.path) === undefined) {
+        const index = action.path.lastIndexOf("/")
+        addFile(index <= 0 ? "" : action.path.slice(0, index), action.path.slice(index + 1), "file", action.content)
+      } else {
+        updateFileContent(action.path, action.content)
+      }
+    }
+    if (action.type === "create_folder") {
+      const index = action.path.lastIndexOf("/")
+      addFile(index <= 0 ? "" : action.path.slice(0, index), action.path.slice(index + 1), "folder")
+    }
+    if (action.type === "delete") deleteNode(action.path)
+    if (action.type === "run") {
+      setTerminalBridgeCmd({ cmd: action.command, targetTab: action.terminal })
+      setActivePanel("terminal")
+    }
+    if (action.type === "preview") {
+      refreshPreview()
+      setActivePanel("preview")
+    }
+    removeProposal(action.id)
+  }
 
   async function handleSend() {
     const trimmed = input.trim()
@@ -90,20 +128,20 @@ export default function AIChatPanel() {
 
     try {
       if (usePuter) {
-        const systemPrompt = buildSystemPrompt({
+        const systemPrompt = `${buildSystemPrompt({
           activeFilePath: activeFile?.path,
           activeFileContent: settings.ai.autoContext ? activeFile?.content : undefined,
           fileTree: getAllPaths(fileTree),
-        })
+        })}\n\n${buildAgentInstruction()}`
         const fullPrompt = `${systemPrompt}\n\nUser: ${trimmed}`
         const reply = await sendViaPuter(fullPrompt)
-        addAIChatMessage({ role: "assistant", content: reply })
+        deliverAIReply(reply)
       } else {
-        const systemPrompt = buildSystemPrompt({
+        const systemPrompt = `${buildSystemPrompt({
           activeFilePath: activeFile?.path,
           activeFileContent: settings.ai.autoContext ? activeFile?.content : undefined,
           fileTree: getAllPaths(fileTree),
-        })
+        })}\n\n${buildAgentInstruction()}`
 
         const messages: AIChatMessage[] = [
           ...aiChatMessages,
@@ -127,7 +165,7 @@ export default function AIChatPanel() {
         } else if (res.error) {
           addAIChatMessage({ role: "assistant", content: `Something went wrong: ${res.error}` })
         } else {
-          addAIChatMessage({ role: "assistant", content: res.content })
+          deliverAIReply(res.content)
         }
       }
     } catch (e) {
@@ -279,6 +317,20 @@ export default function AIChatPanel() {
                 <span /><span /><span />
               </div>
             </div>
+          </div>
+        )}
+
+        {proposals.length > 0 && (
+          <div style={{ margin: "0.5rem 0", display: "grid", gap: "0.4rem" }}>
+            {proposals.map((action) => (
+              <div key={action.id} style={{ border: "1px solid var(--border)", borderRadius: 8, padding: "0.55rem", background: "var(--bg-secondary)" }}>
+                <div style={{ fontSize: 12, fontWeight: 600, marginBottom: "0.4rem" }}>{action.label}</div>
+                <div style={{ display: "flex", gap: "0.35rem" }}>
+                  <button className="btn btn-primary" style={{ fontSize: 11, padding: "0.25rem 0.5rem" }} onClick={() => approveProposal(action)}>Approve</button>
+                  <button className="btn btn-ghost" style={{ fontSize: 11, padding: "0.25rem 0.5rem" }} onClick={() => removeProposal(action.id)}>Decline</button>
+                </div>
+              </div>
+            ))}
           </div>
         )}
 

@@ -52,11 +52,11 @@ export default function TopBar() {
       }
 
       const backendLang = backendLangs[ext]
-      const backOk = backendLang ? await isBackendAvailable() : false
+      const backOk = backendLang ? await isBackendAvailable(settings.backend.url, settings.backend.enabled) : false
 
       if (backOk && backendLang) {
         addTerminalLine({ type: "info", content: `▶ Running ${activeFile.name} via backend...` })
-        const res = await runOnBackend(backendLang, code)
+        const res = await runOnBackend(backendLang, code, { endpoint: settings.backend.url })
         if (!res.error) {
           if (res.stdout) for (const l of res.stdout.trimEnd().split("\n")) addTerminalLine({ type: "output", content: l })
           if (res.stderr) {

@@ -1,0 +1,19 @@
+# SK Coder Rebuild QA Log
+
+| Check | Result | Evidence |
+|---|---|---|
+| Supplied layout baseline | Passed | The attached application renders its SK Coder header, Explorer, editor surface, seven-item bottom navigation, terminal tabs, and dark visual system unchanged at the supplied 1200 px desktop layout. |
+| Static-server backend detection | Fixed | The prior health check accepted a static Vite HTML response as a backend health response. The client now requires the backend JSON `status: "ok"` response from `/api/healthz`. |
+| Node.js public fallback | Passed | With no backend attached, the live Node.js terminal submitted `console.log("node-provider-ok")`, discovered a current public Node runtime, and returned `node-provider-ok` with `Exit 0`. No simulated browser JavaScript fallback was used. |
+| Python public fallback | Passed | With no backend attached, the live Python terminal submitted `print("python-provider-ok")` and returned `python-provider-ok` with `Exit 0`. Pyodide also loaded successfully and remains available when public providers are unavailable. |
+| Python provider failover | Implemented | Provider infrastructure failures, including the reported `catatonit` startup pattern, are now classified as unavailable so the Python handler proceeds to Pyodide instead of treating the failure as a completed program result. |
+| Java public fallback | Passed | The live Java terminal submitted `System.out.println("java-provider-ok");` and returned `java-provider-ok`. The fallback now discovers current compiler identifiers and normalizes snippets for public runners that do not retain an uploaded filename. |
+| Oracle session backend | Build passed | The standalone backend type check and production build pass after replacement of the host-process executor with a Docker-backed workspace-session service. Docker is unavailable in this sandbox, so live isolated-session execution must be validated on the Oracle host after the runtime image is built. |
+| Main SK-AI approval flow | Passed | An isolated browser test with a mocked OpenAI-compatible response produced one `Write /hello.js` proposal, confirmed that no file existed before approval, and created and opened `/hello.js` containing `console.log("hello")` only after approval. |
+| SK-AI terminal approval flow | Passed | The dedicated terminal SK-AI tab received the same mocked coding response and displayed one visible `Approve` control before any workspace mutation. |
+| Permission boundary | Implemented | AI responses may explain work immediately, but file writes, folder creation, deletion, terminal commands, and preview navigation must use a validated structured proposal and require individual user approval. Unsafe paths containing `..`, root deletion, unsupported terminal types, oversized payloads, and unknown actions are rejected. |
+| Oracle endpoint configuration | Passed | The preserved Settings modal now exposes a Runtime section with an execution-backend enable switch and optional Oracle origin input. The UI, top-bar execution flow, language terminals, and WebSocket client use the same configured origin, while a blank value preserves the Nginx same-origin `/api` default. |
+| Browser-to-session bridge | Build passed | Browser files are synchronized to a bounded path-safe backend endpoint before a ready SK-Shell WebSocket session accepts a command. The session remains Docker-isolated with no host process execution. Frontend and backend type checks and production builds pass; the sandbox has no Docker daemon, so live command bridging must be checked on the deployed Oracle host. |
+| Refreshed preview | Passed | The 1200 px preview retained the supplied header, Explorer, editor, dark visual system, and seven-item bottom navigation. The browser console reported zero errors after the bridge changes. |
+
+The persistent Oracle session backend requires final live validation on the Oracle host after Docker runtime deployment.

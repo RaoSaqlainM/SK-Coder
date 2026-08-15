@@ -1,0 +1,27 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    restart: unless-stopped
+    environment:
+      PORT: 3000
+      SK_CODER_WORKSPACE_ROOT: /srv/sk-coder/workspaces
+      SK_CODER_RUNTIME_IMAGE: sk-coder-runtime:latest
+      SK_CODER_SESSION_TTL_HOURS: 72
+      SK_CODER_SESSION_MAX_BYTES: 536870912
+      SK_CODER_SESSION_MAX_COUNT: 250
+      SK_CODER_WORKSPACE_MAX_BYTES: 107374182400
+      SK_CODER_CORS_ORIGIN: ${SK_CODER_CORS_ORIGIN}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${SK_CODER_WORKSPACE_HOST_PATH}:/srv/sk-coder/workspaces
+    ports:
+      - "127.0.0.1:3000:3000"
+  frontend:
+    image: nginx:1.27-alpine
+    restart: unless-stopped
+    volumes:
+      - ./dist/public:/usr/share/nginx/html:ro
+      - ./nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    ports:
+      - "127.0.0.1:8080:80"

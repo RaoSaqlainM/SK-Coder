@@ -1,9 +1,9 @@
 import { useState, useRef, useEffect, useCallback } from "react"
 import { useIDEStore } from "@/store/ideStore"
 import { runWithPiston } from "@/lib/pistonRunner"
-import { runNodeSimulated } from "@/lib/jsRunner"
 import { sendAIMessage, buildSystemPrompt } from "@/lib/aiClient"
-import { runOnBackend, isBackendAvailable } from "@/lib/backendRunner"
+import { buildAgentInstruction, extractAgentProposal, type AgentAction } from "@/lib/aiAgent"
+import { createTerminalWebSocket, isBackendAvailable, runOnBackend, syncBackendWorkspace } from "@/lib/backendRunner"
 import { parseErrors } from "@/components/ide/ErrorPanel"
 import type { FileNode, AIChatMessage } from "@/types/ide"
 
@@ -46,6 +46,8 @@ type TabState = {
   running: boolean
 }
 
+type BackendTerminalBridge = { send: (msg: Record<string, unknown>) => void; close: () => void }
+
 function mkLine(type: TermLine["type"], content: string): TermLine {
   return { id: Math.random().toString(36).slice(2), type, content }
 }
@@ -53,10 +55,10 @@ function mkLine(type: TermLine["type"], content: string): TermLine {
 function initState(type: TermType): TabState {
   const welcomes: Record<TermType, string> = {
     shell: "SK-Shell — ls · cd · cat · run <file> · mkdir · touch · help",
-    python: "Python 3 — backend execution with stdlib + pip • Pyodide offline fallback",
-    nodejs: "Node.js — real Node.js runtime via backend · in-browser fallback",
-    java: "Java — real javac/java compiler via backend · Wandbox fallback",
-    ai: "SK-AI Terminal — ask questions, get code help. Enable Free Puter AI in Settings → SK-AI.",
+    python: "Python 3 ready.",
+    nodejs: "Node.js ready.",
+    java: "Java ready.",
+    ai: "SK-AI is ready to help with your workspace.",
   }
   return {
     lines: [mkLine("info", welcomes[type])],
@@ -66,6 +68,30 @@ function initState(type: TermType): TabState {
     cwd: "/",
     running: false,
   }
+}
+
+function collectPaths(nodes: FileNode[]): string[] {
+  const paths: string[] = []
+  const walk = (items: FileNode[]) => {
+    for (const item of items) {
+      paths.push(item.path)
+      if (item.children) walk(item.children)
+    }
+  }
+  walk(nodes)
+  return paths
+}
+
+function collectWorkspaceFiles(nodes: FileNode[]): { path: string; content: string }[] {
+  const files: { path: string; content: string }[] = []
+  const walk = (items: FileNode[]) => {
+    for (const item of items) {
+      if (item.type === "file") files.push({ path: item.path, content: item.content || "" })
+      if (item.children) walk(item.children)
+    }
+  }
+  walk(nodes)
+  return files
 }
 
 let pyodideLoading = false
@@ -159,8 +185,8 @@ function resolvePath(cwd: string, input: string): string {
 
 function wrapJavaCode(code: string): string {
   const t = code.trim()
-  if ((t.includes("class ") && t.includes("public static void main")) || t.startsWith("public class") || t.startsWith("class")) return t
-  return `public class Main {\n    public static void main(String[] args) throws Exception {\n        ${t.endsWith(";") ? t : t + ";"}\n    }\n}`
+  if ((t.includes("class ") && t.includes("public static void main")) || t.startsWith("public class") || t.startsWith("class")) return t.replace(/public\s+class\s+/, "class ")
+  return `class Main {\n    public static void main(String[] args) throws Exception {\n        ${t.endsWith(";") ? t : t + ";"}\n    }\n}`
 }
 
 const TERM_COLORS: Record<TermType, string> = {
@@ -183,7 +209,7 @@ const ADD_OPTIONS: { type: TermType; label: string; desc: string }[] = [
   { type: "shell", label: "SK-Shell", desc: "IDE filesystem · run any file via backend" },
   { type: "python", label: "Python 3", desc: "Backend execution · Pyodide offline fallback" },
   { type: "nodejs", label: "Node.js", desc: "Real Node.js via backend · in-browser fallback" },
-  { type: "java", label: "Java", desc: "Real javac/java via backend · Wandbox fallback" },
+  { type: "java", label: "Java", desc: "Run Java files and snippets" },
   { type: "ai", label: "SK-AI", desc: "Ask code questions · Puter free AI or API key" },
 ]
 
@@ -246,7 +272,7 @@ const DEFAULT_STATES: Record<string, TabState> = {
 }
 
 export default function MultiTerminal() {
-  const { fileTree, addFile, settings, getActiveFile, setShowSettings, setSettingsTab, terminalBridgeCmd, setTerminalBridgeCmd, setErrors } = useIDEStore()
+  const { fileTree, addFile, updateFileContent, deleteNode, getFileContent, settings, getActiveFile, setShowSettings, setSettingsTab, setActivePanel, refreshPreview, terminalBridgeCmd, setTerminalBridgeCmd, setErrors } = useIDEStore()
 
   const [tabs, setTabs] = useState<TabDef[]>(DEFAULT_TABS)
   const [activeTab, setActiveTab] = useState("shell-1")
@@ -254,10 +280,14 @@ export default function MultiTerminal() {
   const [showAddMenu, setShowAddMenu] = useState(false)
   const [pyReady, setPyReady] = useState(pyodideReady)
   const [aiReady, setAiReady] = useState(false)
+  const [aiProposals, setAiProposals] = useState<Record<string, AgentAction[]>>({})
   const addMenuRef = useRef<HTMLDivElement>(null)
 
   const outputRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
+  const backendTerminalRef = useRef<BackendTerminalBridge | null>(null)
+  const backendSessionRef = useRef("")
+  const backendTabRef = useRef("shell-1")
 
   const activeState = tabStates[activeTab] ?? initState("shell")
   const activeType = tabs.find((t) => t.id === activeTab)?.type ?? "shell"
@@ -271,6 +301,35 @@ export default function MultiTerminal() {
   useEffect(() => {
     inputRef.current?.focus()
   }, [activeTab])
+
+  useEffect(() => {
+    let disposed = false
+    backendTerminalRef.current?.close()
+    backendTerminalRef.current = null
+    backendSessionRef.current = ""
+    if (!settings.backend.enabled) return undefined
+    void isBackendAvailable(settings.backend.url, true).then((available) => {
+      if (!available || disposed) return
+      backendTerminalRef.current = createTerminalWebSocket(
+        (_cwd, sessionId) => {
+          if (!sessionId) return
+          backendSessionRef.current = sessionId
+          addLine("shell-1", "success", "Connected to isolated workspace.")
+        },
+        (data) => addLines(backendTabRef.current, "output", data),
+        (data) => addLines(backendTabRef.current, "error", data),
+        (code) => addLine(backendTabRef.current, code === 0 ? "success" : "error", `Exit ${code}`),
+        (error) => addLine(backendTabRef.current, "error", error),
+        settings.backend.url,
+      )
+    })
+    return () => {
+      disposed = true
+      backendTerminalRef.current?.close()
+      backendTerminalRef.current = null
+      backendSessionRef.current = ""
+    }
+  }, [settings.backend.enabled, settings.backend.url])
 
   useEffect(() => {
     if (!pyodideReady && !pyodideLoading) {
@@ -378,6 +437,17 @@ export default function MultiTerminal() {
     const cmd = parts[0].toLowerCase()
     const args = parts.slice(1)
 
+    if (settings.backend.enabled && backendTerminalRef.current && backendSessionRef.current) {
+      try {
+        backendTabRef.current = tabId
+        await syncBackendWorkspace(backendSessionRef.current, collectWorkspaceFiles(fileTree), settings.backend.url)
+        backendTerminalRef.current.send({ type: "command", command: input })
+        return
+      } catch (error) {
+        addLine(tabId, "error", `Workspace sync failed: ${error instanceof Error ? error.message : "unknown error"}`)
+      }
+    }
+
     if (cmd === "help") {
       const help = [
         "SK-Shell commands:",
@@ -466,11 +536,11 @@ export default function MultiTerminal() {
       const ext = filename.split(".").pop()?.toLowerCase() || ""
       updateState(tabId, { running: true })
       addLine(tabId, "info", `Running ${filename}...`)
-      const backOk = await isBackendAvailable()
+      const backOk = await isBackendAvailable(settings.backend.url, settings.backend.enabled)
 
       if (cmd === "python" || (cmd === "run" && ext === "py")) {
         if (backOk) {
-          const res = await runOnBackend("python", code)
+          const res = await runOnBackend("python", code, { endpoint: settings.backend.url })
           if (!res.error) {
             if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
             if (res.stderr) { addLines(tabId, "error", res.stderr.trimEnd()); const errs = parseErrors(res.stderr); if (errs.length) setErrors(errs) }
@@ -480,11 +550,11 @@ export default function MultiTerminal() {
           }
         }
         const publicRes = await runWithPiston(code, "python", settings.piston.serverUrl)
-        if (!publicRes.error) {
+        if (!publicRes.unavailable) {
           if (publicRes.output) addLines(tabId, "output", publicRes.output.trimEnd())
           if (publicRes.stderr) addLines(tabId, "error", publicRes.stderr.trimEnd())
           if (!publicRes.output && !publicRes.stderr) addLine(tabId, "info", "(no output)")
-          addLine(tabId, publicRes.exitCode === 0 ? "success" : "error", `Public runner exit ${publicRes.exitCode}`)
+          addLine(tabId, publicRes.exitCode === 0 ? "success" : "error", `Exit ${publicRes.exitCode}`)
           updateState(tabId, { running: false }); return
         }
         const ready = await ensurePyodide((msg) => { addLine(tabId, "info", msg); if (msg.includes("ready")) setPyReady(true) })
@@ -495,7 +565,7 @@ export default function MultiTerminal() {
         if (!output && !error) addLine(tabId, "info", "(no output)")
       } else if (cmd === "node" || (cmd === "run" && ["js", "jsx", "ts", "tsx", "mjs", "cjs"].includes(ext))) {
         if (backOk) {
-          const res = await runOnBackend("node", code)
+          const res = await runOnBackend("node", code, { endpoint: settings.backend.url })
           if (!res.error) {
             if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
             if (res.stderr) addLines(tabId, "error", res.stderr.trimEnd())
@@ -505,22 +575,18 @@ export default function MultiTerminal() {
           }
         }
         const publicRes = await runWithPiston(code, ext === "ts" || ext === "tsx" ? "typescript" : "javascript", settings.piston.serverUrl)
-        if (!publicRes.error) {
+        if (!publicRes.unavailable) {
           if (publicRes.output) addLines(tabId, "output", publicRes.output.trimEnd())
           if (publicRes.stderr) addLines(tabId, "error", publicRes.stderr.trimEnd())
           if (!publicRes.output && !publicRes.stderr) addLine(tabId, "info", "(no output)")
-          addLine(tabId, publicRes.exitCode === 0 ? "success" : "error", `Public runner exit ${publicRes.exitCode}`)
+          addLine(tabId, publicRes.exitCode === 0 ? "success" : "error", `Exit ${publicRes.exitCode}`)
         } else {
-          addLine(tabId, "info", "Public Node.js runner unavailable — using the limited browser JavaScript sandbox.")
-          const res = runNodeSimulated(code)
-          for (const l of res.output) addLine(tabId, "output", l)
-          if (res.error) addLines(tabId, "error", res.error)
-          if (!res.output.length && !res.error) addLine(tabId, "info", "(no output)")
+          addLine(tabId, "error", "No real Node.js runtime is reachable. Reconnect the server workspace or try again shortly.")
         }
       } else if (cmd === "java" || (cmd === "run" && ext === "java")) {
         const javaCode = wrapJavaCode(code)
         if (backOk) {
-          const res = await runOnBackend("java", javaCode)
+          const res = await runOnBackend("java", javaCode, { endpoint: settings.backend.url })
           if (!res.error) {
             if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
             if (res.stderr) { addLines(tabId, "error", res.stderr.trimEnd()); const errs = parseErrors(res.stderr); if (errs.length) setErrors(errs) }
@@ -538,7 +604,7 @@ export default function MultiTerminal() {
         const lang = langMap[ext] || ""
         if (!lang) { addLine(tabId, "error", `Cannot run .${ext} files — use a language-specific terminal`); updateState(tabId, { running: false }); return }
         if (backOk) {
-          const res = await runOnBackend(lang, code)
+          const res = await runOnBackend(lang, code, { endpoint: settings.backend.url })
           if (!res.error) {
             if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
             if (res.stderr) { addLines(tabId, "error", res.stderr.trimEnd()); const errs = parseErrors(res.stderr); if (errs.length) setErrors(errs) }
@@ -576,9 +642,9 @@ export default function MultiTerminal() {
       addLine(tabId, "info", `Running ${filename}...`)
       execCode = node.content || ""
     }
-    const backOk = await isBackendAvailable()
+    const backOk = await isBackendAvailable(settings.backend.url, settings.backend.enabled)
     if (backOk) {
-      const res = await runOnBackend("python", execCode)
+      const res = await runOnBackend("python", execCode, { endpoint: settings.backend.url })
       if (!res.error) {
         if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
         if (res.stderr) { addLines(tabId, "error", res.stderr.trimEnd()); const errs = parseErrors(res.stderr); if (errs.length) setErrors(errs) }
@@ -588,11 +654,11 @@ export default function MultiTerminal() {
       }
     }
     const publicRes = await runWithPiston(execCode, "python", settings.piston.serverUrl)
-    if (!publicRes.error) {
+    if (!publicRes.unavailable) {
       if (publicRes.output) addLines(tabId, "output", publicRes.output.trimEnd())
       if (publicRes.stderr) addLines(tabId, "error", publicRes.stderr.trimEnd())
       if (!publicRes.output && !publicRes.stderr) addLine(tabId, "info", "(no output)")
-      addLine(tabId, publicRes.exitCode === 0 ? "success" : "error", `Public runner exit ${publicRes.exitCode}`)
+      addLine(tabId, publicRes.exitCode === 0 ? "success" : "error", `Exit ${publicRes.exitCode}`)
       return
     }
     const ready = await ensurePyodide((msg) => { addLine(tabId, "info", msg); if (msg.includes("ready")) setPyReady(true) })
@@ -617,9 +683,9 @@ export default function MultiTerminal() {
       addLine(tabId, "info", `Running ${filename}...`)
       execCode = node.content || ""
     }
-    const backOk = await isBackendAvailable()
+    const backOk = await isBackendAvailable(settings.backend.url, settings.backend.enabled)
     if (backOk) {
-      const res = await runOnBackend("node", execCode)
+      const res = await runOnBackend("node", execCode, { endpoint: settings.backend.url })
       if (!res.error) {
         if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
         if (res.stderr) addLines(tabId, "error", res.stderr.trimEnd())
@@ -629,17 +695,13 @@ export default function MultiTerminal() {
       }
     }
     const publicRes = await runWithPiston(execCode, "javascript", settings.piston.serverUrl)
-    if (!publicRes.error) {
+    if (!publicRes.unavailable) {
       if (publicRes.output) addLines(tabId, "output", publicRes.output.trimEnd())
       if (publicRes.stderr) addLines(tabId, "error", publicRes.stderr.trimEnd())
       if (!publicRes.output && !publicRes.stderr) addLine(tabId, "info", "(no output)")
-      addLine(tabId, publicRes.exitCode === 0 ? "success" : "error", `Public runner exit ${publicRes.exitCode}`)
+      addLine(tabId, publicRes.exitCode === 0 ? "success" : "error", `Exit ${publicRes.exitCode}`)
     } else {
-      addLine(tabId, "info", "Public Node.js runner unavailable — using the limited browser JavaScript sandbox.")
-      const res = runNodeSimulated(execCode)
-      for (const l of res.output) addLine(tabId, "output", l)
-      if (res.error) addLines(tabId, "error", res.error)
-      if (!res.output.length && !res.error) addLine(tabId, "info", "(no output)")
+      addLine(tabId, "error", "No real Node.js runtime is reachable. Reconnect the server workspace or try again shortly.")
     }
   }
 
@@ -658,9 +720,9 @@ export default function MultiTerminal() {
       javaCode = node.content || ""
     }
     javaCode = wrapJavaCode(javaCode)
-    const backOk = await isBackendAvailable()
+    const backOk = await isBackendAvailable(settings.backend.url, settings.backend.enabled)
     if (backOk) {
-      const res = await runOnBackend("java", javaCode)
+      const res = await runOnBackend("java", javaCode, { endpoint: settings.backend.url })
       if (!res.error) {
         if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
         if (res.stderr) { addLines(tabId, "error", res.stderr.trimEnd()); const errs = parseErrors(res.stderr); if (errs.length) setErrors(errs) }
@@ -690,7 +752,7 @@ export default function MultiTerminal() {
       return { ...prev, [tabId]: { ...cur, lines: [...cur.lines, { id: thinkingId, type: "ai-thinking" as const, content: "Thinking..." }] } }
     })
     const activeFile = getActiveFile()
-    const systemPrompt = buildSystemPrompt({ activeFilePath: activeFile?.path, activeFileContent: autoContext ? activeFile?.content : undefined, fileTree: [] })
+    const systemPrompt = `${buildSystemPrompt({ activeFilePath: activeFile?.path, activeFileContent: autoContext ? activeFile?.content : undefined, fileTree: collectPaths(fileTree) })}\n\n${buildAgentInstruction()}`
     try {
       let reply = ""
       if (usePuter) {
@@ -711,10 +773,14 @@ export default function MultiTerminal() {
         if (res.error) reply = `Error: ${res.error}`
         else reply = res.content || "(no response)"
       }
+      const proposal = extractAgentProposal(reply)
+      if (proposal.actions.length) {
+        setAiProposals((current) => ({ ...current, [tabId]: [...(current[tabId] || []), ...proposal.actions] }))
+      }
       setTabStates((prev) => {
         const cur = prev[tabId] ?? initState("ai")
         const withoutThinking = cur.lines.filter((l) => l.id !== thinkingId)
-        const replyLines = reply.split("\n").map((line) => mkLine("ai-response", line))
+        const replyLines = (proposal.message || "I prepared actions for your review.").split("\n").map((line) => mkLine("ai-response", line))
         return { ...prev, [tabId]: { ...cur, lines: [...withoutThinking, ...replyLines, mkLine("info", "─────")] } }
       })
     } catch (e) {
@@ -724,6 +790,32 @@ export default function MultiTerminal() {
         return { ...prev, [tabId]: { ...cur, lines: [...withoutThinking, mkLine("error", `AI Error: ${String(e)}`)] } }
       })
     }
+  }
+
+  function removeAIProposal(tabId: string, proposalId: string) {
+    setAiProposals((current) => ({ ...current, [tabId]: (current[tabId] || []).filter((proposal) => proposal.id !== proposalId) }))
+  }
+
+  function approveAIProposal(tabId: string, action: AgentAction) {
+    if (action.type === "write") {
+      if (getFileContent(action.path) === undefined) {
+        const index = action.path.lastIndexOf("/")
+        addFile(index <= 0 ? "" : action.path.slice(0, index), action.path.slice(index + 1), "file", action.content)
+      } else {
+        updateFileContent(action.path, action.content)
+      }
+    }
+    if (action.type === "create_folder") {
+      const index = action.path.lastIndexOf("/")
+      addFile(index <= 0 ? "" : action.path.slice(0, index), action.path.slice(index + 1), "folder")
+    }
+    if (action.type === "delete") deleteNode(action.path)
+    if (action.type === "run") setTerminalBridgeCmd({ cmd: action.command, targetTab: action.terminal })
+    if (action.type === "preview") {
+      refreshPreview()
+      setActivePanel("preview")
+    }
+    removeAIProposal(tabId, action.id)
   }
 
   async function handleSubmit(tabId: string) {
@@ -892,6 +984,15 @@ export default function MultiTerminal() {
             </div>
           )
         })}
+        {activeType === "ai" && (aiProposals[activeTab] || []).map((action) => (
+          <div key={action.id} style={{ border: "1px solid rgba(167,139,250,0.45)", borderRadius: 6, padding: "0.45rem", margin: "0.45rem 0", background: "rgba(167,139,250,0.06)" }}>
+            <div style={{ color: "var(--text-primary)", fontSize: 12, fontWeight: 600, marginBottom: "0.4rem" }}>{action.label}</div>
+            <div style={{ display: "flex", gap: "0.35rem" }}>
+              <button className="btn btn-primary" style={{ padding: "0.2rem 0.45rem", fontSize: 10 }} onClick={() => approveAIProposal(activeTab, action)}>Approve</button>
+              <button className="btn btn-ghost" style={{ padding: "0.2rem 0.45rem", fontSize: 10 }} onClick={() => removeAIProposal(activeTab, action.id)}>Decline</button>
+            </div>
+          </div>
+        ))}
         {activeState.running && activeType !== "ai" && (
           <div className="terminal-line info" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
             <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: "spin 1s linear infinite", flexShrink: 0 }}>
