@@ -10,5 +10,5 @@
 - [x] Add independently tested Piston and Wandbox single-file fallback providers without presenting them as full terminals
 - [x] Implement permissioned AI coding-agent actions for read, edit, run, preview, and terminal proposals
 - [x] Preserve the supplied IDE design while refining only confirmed broken or incomplete functionality
-- [ ] Add functional integration tests for terminal execution, failover, agent permissions, and responsive layout
-- [ ] Prepare Oracle deployment instructions, validate the build, push recovery work, and deliver a release archive
+- [x] Complete functional integration validation for terminal execution, failover, agent permissions, and responsive layout
+- [x] Prepare Oracle deployment instructions, validate the build, push recovery work, and deliver a release archive
