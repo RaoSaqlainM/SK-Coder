@@ -1,129 +1,183 @@
-import { useRef, useCallback, useEffect } from "react";
-import Editor, { OnMount } from "@monaco-editor/react";
-import { useIDEStore } from "@/store/ideStore";
-import { FileCode } from "lucide-react";
-import { chat, isKeyValidated } from "@/lib/aiClient";
+import { useRef, useEffect, useCallback } from "react"
+import MonacoEditor, { OnMount } from "@monaco-editor/react"
+import { useIDEStore } from "@/store/ideStore"
+import { formatCode, isSupportedLanguage } from "@/lib/formatter"
+import { toast } from "sonner"
 
 export default function CodeEditor() {
-  const { openTabs, activeTabId, updateTabContent, updateFileContent, settings, addTerminalLine, editorTarget } = useIDEStore();
-  const editorRef = useRef<any>(null);
-  const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const lastAnalyzed = useRef<string>("");
-  const activeTab = openTabs.find((t) => t.id === activeTabId);
+  const {
+    openTabs, activeTabId, getActiveFile, getFileContent,
+    updateFileContent, markTabModified, settings, setIsRunning,
+    addTerminalLine, setActivePanel,
+  } = useIDEStore()
 
-  const handleEditorMount: OnMount = useCallback((editor) => {
-    editorRef.current = editor;
-    editor.focus();
-  }, []);
+  const activeFile = getActiveFile()
+  const editorRef = useRef<Parameters<OnMount>[0] | null>(null)
+  const monacoRef = useRef<Parameters<OnMount>[1] | null>(null)
 
-  const handleChange = useCallback(
-    (value: string | undefined) => {
-      if (!activeTab || value === undefined) return;
-      updateTabContent(activeTab.id, value);
-      if (settings.editor.autoSave) {
-        updateFileContent(activeTab.path, value);
+  const handleFormat = useCallback(async () => {
+    const editor = editorRef.current
+    if (!editor || !activeFile) return
+    const lang = activeFile.language || "plaintext"
+    if (!isSupportedLanguage(lang)) {
+      toast.info(`No formatter for ${lang}`)
+      return
+    }
+    const code = editor.getValue()
+    toast.loading("Formatting…", { id: "fmt" })
+    const { formatted, error } = await formatCode(code, lang, settings.editor.tabSize, settings.editor.tabSize === 0)
+    if (error) {
+      toast.error(error, { id: "fmt" })
+      return
+    }
+    if (formatted === code) {
+      toast.success("Already formatted", { id: "fmt" })
+      return
+    }
+    const model = editor.getModel()
+    if (model) {
+      const op = { range: model.getFullModelRange(), text: formatted }
+      model.applyEdits([op])
+      updateFileContent(activeFile.path, formatted)
+      if (activeTabId) markTabModified(activeTabId, true)
+    }
+    toast.success("Formatted", { id: "fmt" })
+  }, [activeFile, activeTabId, settings.editor.tabSize, updateFileContent, markTabModified])
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.shiftKey && e.altKey && e.code === "KeyF") ||
+          (e.shiftKey && (e.metaKey || e.ctrlKey) && e.code === "KeyF")) {
+        e.preventDefault()
+        handleFormat()
       }
-    },
-    [activeTab, updateTabContent, updateFileContent, settings.editor.autoSave]
-  );
+    }
+    window.addEventListener("keydown", handler)
+    return () => window.removeEventListener("keydown", handler)
+  }, [handleFormat])
 
-  useEffect(() => {
-    if (!settings.ai.autoAnalyze || !activeTab || !isKeyValidated()) return;
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(async () => {
-      const sig = activeTab.path + ":" + activeTab.content.length;
-      if (sig === lastAnalyzed.current) return;
-      lastAnalyzed.current = sig;
-      if (activeTab.content.trim().length < 20) return;
-      try {
-        const { reply } = await chat([
-          { role: "system", content: "You scan code for bugs. Reply with 'OK' if no issues, otherwise list 1-3 issues briefly with line numbers. Max 3 lines." },
-          { role: "user", content: `File: ${activeTab.name}\n\n${activeTab.content.slice(0, 4000)}` },
-        ]);
-        if (reply && !/^ok\b/i.test(reply.trim())) {
-          addTerminalLine({ text: `[AI] ${activeTab.name}: ${reply.slice(0, 300)}`, type: "info" });
-        }
-      } catch {}
-    }, 3000);
-    return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
-  }, [activeTab?.content, activeTab?.path, activeTab?.name, settings.ai.autoAnalyze, addTerminalLine]);
+  const handleEditorMount: OnMount = (editor, monaco) => {
+    editorRef.current = editor
+    monacoRef.current = monaco
 
-  useEffect(() => {
-    if (!editorRef.current || !activeTab || !editorTarget || editorTarget.path !== activeTab.path) return;
-    const position = { lineNumber: editorTarget.lineNumber, column: editorTarget.columnNumber || 1 };
-    editorRef.current.setPosition(position);
-    editorRef.current.revealPositionInCenter(position);
-    editorRef.current.focus();
-  }, [activeTab?.path, editorTarget]);
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
+      const model = editor.getModel()
+      if (model && activeFile) {
+        updateFileContent(activeFile.path, model.getValue())
+        markTabModified(activeTabId || "", false)
+      }
+    })
 
+    editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyP, () => {
+      editor.getAction("editor.action.quickCommand")?.run()
+    })
 
-  if (!activeTab) {
+    editor.addCommand(monaco.KeyMod.Shift | monaco.KeyMod.Alt | monaco.KeyCode.KeyF, () => {
+      handleFormat()
+    })
+
+    monaco.editor.defineTheme("sk-dark", {
+      base: "vs-dark",
+      inherit: true,
+      rules: [
+        { token: "comment", foreground: "6c7086", fontStyle: "italic" },
+        { token: "keyword", foreground: "cba6f7" },
+        { token: "string", foreground: "a6e3a1" },
+        { token: "number", foreground: "fab387" },
+        { token: "type", foreground: "89b4fa" },
+        { token: "function", foreground: "89dceb" },
+        { token: "variable", foreground: "cdd6f4" },
+      ],
+      colors: {
+        "editor.background": "#1e1e2e",
+        "editor.foreground": "#cdd6f4",
+        "editorLineNumber.foreground": "#45475a",
+        "editorLineNumber.activeForeground": "#7f849c",
+        "editor.lineHighlightBackground": "#24273a",
+        "editor.selectionBackground": "#45475a",
+        "editor.wordHighlightBackground": "#313244",
+        "editorCursor.foreground": "#007acc",
+        "editorIndentGuide.background": "#313244",
+        "editorIndentGuide.activeBackground": "#45475a",
+        "scrollbarSlider.background": "#31324460",
+        "scrollbarSlider.hoverBackground": "#45475a80",
+        "editorSuggestWidget.background": "#1e1e2e",
+        "editorSuggestWidget.border": "#313244",
+        "editorSuggestWidget.selectedBackground": "#313244",
+      },
+    })
+    monaco.editor.setTheme("sk-dark")
+  }
+
+  const activeContent = activeFile ? (getFileContent(activeFile.path) || activeFile.content || "") : ""
+
+  function handleChange(value: string | undefined) {
+    if (!activeFile || value === undefined) return
+    updateFileContent(activeFile.path, value)
+    if (activeTabId) markTabModified(activeTabId, true)
+  }
+
+  if (!activeFile) {
     return (
-      <div className="flex flex-col items-center justify-center h-full bg-editor-bg text-muted-foreground gap-4">
-        <div className="w-16 h-16 rounded-2xl bg-primary/10 flex items-center justify-center">
-          <FileCode className="w-8 h-8 text-primary/40" />
-        </div>
-        <div className="text-center">
-          <p className="text-sm font-medium mb-1">No file open</p>
-          <p className="text-xs text-muted-foreground/60 max-w-[250px]">
-            Select a file from the explorer, open a project, or create a new file to start coding
-          </p>
-        </div>
+      <div className="panel-placeholder">
+        <div className="panel-placeholder-icon">⚡</div>
+        <p style={{ fontWeight: 600, color: "var(--text-primary)" }}>SK Coder IDE</p>
+        <p style={{ fontSize: 12 }}>Open a file from the explorer to start editing</p>
+        <p style={{ fontSize: 11, color: "var(--text-muted)", marginTop: "0.5rem" }}>
+          or drag & drop files into the sidebar
+        </p>
       </div>
-    );
+    )
   }
 
   return (
-    <div className="h-full w-full">
-      <Editor
-        key={activeTab.id}
-        height="100%"
-        language={activeTab.language}
-        value={activeTab.content}
-        theme={settings.editor.theme}
-        onChange={handleChange}
-        onMount={handleEditorMount}
-        options={{
-          fontSize: settings.editor.fontSize,
-          fontFamily: settings.editor.fontFamily,
-          tabSize: settings.editor.tabSize,
-          wordWrap: settings.editor.wordWrap,
-          minimap: { enabled: settings.editor.minimap },
-          lineNumbers: settings.editor.lineNumbers,
-          matchBrackets: settings.editor.bracketPairs ? "always" : "never",
-          scrollBeyondLastLine: false,
-          smoothScrolling: settings.editor.smoothScrolling,
-          cursorBlinking: "smooth",
-          cursorStyle: settings.editor.cursorStyle,
-          cursorSmoothCaretAnimation: "on",
-          renderWhitespace: settings.editor.renderWhitespace,
-          automaticLayout: true,
-          padding: { top: 8 },
-          suggestOnTriggerCharacters: true,
-          quickSuggestions: true,
-          acceptSuggestionOnEnter: "on",
-          folding: true,
-          foldingStrategy: "indentation",
-          bracketPairColorization: { enabled: true },
-          guides: { bracketPairs: true, indentation: true },
-          overviewRulerBorder: false,
-          hideCursorInOverviewRuler: true,
-          scrollbar: {
-            verticalScrollbarSize: 6,
-            horizontalScrollbarSize: 6,
-          },
-          contextmenu: true,
-          formatOnPaste: true,
-          formatOnType: false,
-          autoClosingBrackets: "always",
-          autoClosingQuotes: "always",
-          autoIndent: "full",
-          colorDecorators: true,
-          linkedEditing: true,
-          renderLineHighlight: "all",
-          snippetSuggestions: "top",
-        }}
-      />
-    </div>
-  );
+    <MonacoEditor
+      height="100%"
+      language={activeFile.language || "plaintext"}
+      value={activeContent}
+      onChange={handleChange}
+      onMount={handleEditorMount}
+      loading={
+        <div className="monaco-loading">
+          <div className="loading-spinner" />
+          Loading editor...
+        </div>
+      }
+      options={{
+        fontSize: settings.editor.fontSize,
+        fontFamily: settings.editor.fontFamily,
+        fontLigatures: true,
+        tabSize: settings.editor.tabSize,
+        wordWrap: settings.editor.wordWrap,
+        minimap: { enabled: settings.editor.minimap },
+        lineNumbers: settings.editor.lineNumbers,
+        bracketPairColorization: { enabled: settings.editor.bracketPairs },
+        smoothScrolling: settings.editor.smoothScrolling,
+        cursorStyle: settings.editor.cursorStyle,
+        renderWhitespace: settings.editor.renderWhitespace,
+        scrollBeyondLastLine: false,
+        automaticLayout: true,
+        contextmenu: true,
+        quickSuggestions: true,
+        suggestOnTriggerCharacters: true,
+        autoIndent: "full",
+        formatOnPaste: true,
+        formatOnType: false,
+        padding: { top: 12, bottom: 12 },
+        scrollbar: {
+          verticalScrollbarSize: 6,
+          horizontalScrollbarSize: 6,
+          useShadows: false,
+        },
+        overviewRulerLanes: 0,
+        glyphMargin: false,
+        folding: true,
+        showFoldingControls: "mouseover",
+        renderLineHighlight: "line",
+        occurrencesHighlight: "singleFile",
+        selectionHighlight: true,
+        theme: "sk-dark",
+      }}
+    />
+  )
 }

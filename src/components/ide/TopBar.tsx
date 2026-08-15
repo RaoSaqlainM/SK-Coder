@@ -1,138 +1,145 @@
-import { useState, useRef, useCallback } from "react";
-import { Link } from "react-router-dom";
-import { Bot, ChevronRight, Download, FilePlus, FolderOpen, HelpCircle, Menu, MoreVertical, Play, Settings, Square } from "lucide-react";
-import { useIDEStore } from "@/store/ideStore";
-import { filesFromFileList, pickedFilesToTree } from "@/lib/importProject";
-import { runWorkspace } from "@/lib/runWorkspace";
-
-import NewFileDialog from "./NewFileDialog";
-
+import { useIDEStore } from "@/store/ideStore"
+import { buildPreview } from "@/lib/previewBuilder"
+import { runWithPiston, detectLanguageFromExtension } from "@/lib/pistonRunner"
+import { runOnBackend, isBackendAvailable } from "@/lib/backendRunner"
+import { parseErrors } from "@/components/ide/ErrorPanel"
+import { toast } from "sonner"
 
 export default function TopBar() {
   const {
-    isRunning, setIsRunning, toggleSidebar, addTerminalLine, setActivePanel,
-    openFile, setFileTree, fileTree, openTabs, activeTabId, setPreviewUrl,
-    downloadProject, setAiChatOpen, setTerminalType,
-  } = useIDEStore();
-  const [newFileOpen, setNewFileOpen] = useState(false);
-  const [menuOpen, setMenuOpen] = useState(false);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  const folderInputRef = useRef<HTMLInputElement>(null);
-  const activeTab = openTabs.find((t) => t.id === activeTabId);
+    isRunning, setIsRunning, fileTree, activeTabId,
+    addTerminalLine, clearTerminal, setActivePanel, setShowSettings, getActiveFile,
+    setPreviewContent, refreshPreview, setErrors,
+    settings,
+  } = useIDEStore()
 
-  const importPicked = useCallback(async (picked: ReturnType<typeof filesFromFileList>) => {
-    const { tree, firstOpenable } = await pickedFilesToTree(picked, (text, type = "info") => addTerminalLine({ text, type }));
-    if (!tree.length) return;
-    const current = useIDEStore.getState().fileTree;
-    setFileTree([...current, ...tree]);
-    if (firstOpenable) openFile(firstOpenable);
-    addTerminalLine({ text: `Opened ${picked.length} item(s) into workspace`, type: "success" });
-  }, [addTerminalLine, openFile, setFileTree]);
+  const activeFile = getActiveFile()
 
-  const handleFileInput = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (!e.target.files?.length) return;
-    await importPicked(filesFromFileList(e.target.files));
-    e.target.value = "";
-  }, [importPicked]);
-
-  const handleOpen = useCallback(() => {
-    setMenuOpen(false);
-    fileInputRef.current?.click();
-  }, []);
-
-  const handleOpenFolder = useCallback(() => {
-    setMenuOpen(false);
-    folderInputRef.current?.click();
-  }, []);
-
-  const handleRun = useCallback(async () => {
+  async function handleRun() {
     if (isRunning) {
-      setIsRunning(false);
-      addTerminalLine({ text: "Stopped.", type: "info" });
-      return;
+      setIsRunning(false)
+      addTerminalLine({ type: "info", content: "Execution stopped." })
+      return
     }
-    setIsRunning(true);
-    try {
-      await runWorkspace({ activeTab, fileTree, addTerminalLine, setPreviewUrl, setActivePanel, setTerminalType });
-    } catch (error) {
-      setActivePanel("terminal");
-      addTerminalLine({ text: error instanceof Error ? error.message : String(error), type: "error" });
-    } finally {
-      setIsRunning(false);
-    }
-  }, [activeTab, addTerminalLine, fileTree, isRunning, setActivePanel, setIsRunning, setPreviewUrl, setTerminalType]);
 
-  const breadcrumb = activeTab?.path.split("/") || [];
+    if (!activeFile) {
+      toast.error("Open a file first")
+      return
+    }
+
+    const ext = activeFile.name.split(".").pop()?.toLowerCase() || ""
+    const code = activeFile.content || ""
+
+    if (["html", "htm"].includes(ext)) {
+      const html = buildPreview(fileTree, activeFile.path)
+      setPreviewContent(html)
+      refreshPreview()
+      setActivePanel("preview")
+      toast.success("Preview updated")
+      return
+    }
+
+    setActivePanel("terminal")
+    clearTerminal()
+    setErrors([])
+    setIsRunning(true)
+
+    try {
+      const backendLangs: Record<string, string> = {
+        py: "python", js: "node", jsx: "node", ts: "node", tsx: "node",
+        java: "java", cpp: "cpp", c: "c", rs: "rust", go: "go",
+        sh: "bash", bash: "bash",
+      }
+
+      const backendLang = backendLangs[ext]
+      const backOk = backendLang ? await isBackendAvailable() : false
+
+      if (backOk && backendLang) {
+        addTerminalLine({ type: "info", content: `▶ Running ${activeFile.name} via backend...` })
+        const res = await runOnBackend(backendLang, code)
+        if (!res.error) {
+          if (res.stdout) for (const l of res.stdout.trimEnd().split("\n")) addTerminalLine({ type: "output", content: l })
+          if (res.stderr) {
+            for (const l of res.stderr.trimEnd().split("\n")) addTerminalLine({ type: "error", content: l })
+            const errs = parseErrors(res.stderr, activeFile.name)
+            if (errs.length) setErrors(errs)
+          }
+          if (!res.stdout && !res.stderr) addTerminalLine({ type: "info", content: "(no output)" })
+           addTerminalLine({
+             type: res.exitCode === 0 ? "success" : "error",
+             content: `${res.exitCode === 0 ? "✓ Completed" : "✕ Failed"}  ⏱ ${res.executionTime}ms  exit ${res.exitCode}`,
+           })
+          return
+        }
+      }
+
+      const pistonLang = detectLanguageFromExtension(activeFile.name)
+      if (pistonLang) {
+         addTerminalLine({ type: "info", content: `▶ Running ${activeFile.name} via public ${pistonLang} runner...` })
+         const res = await runWithPiston(code, pistonLang, settings.piston.serverUrl)
+        if (res.output) for (const l of res.output.split("\n")) addTerminalLine({ type: "output", content: l })
+        if (res.stderr) for (const l of res.stderr.split("\n")) addTerminalLine({ type: "error", content: l })
+        if (!res.output && !res.stderr) addTerminalLine({ type: "info", content: "(no output)" })
+         addTerminalLine({
+           type: res.exitCode === 0 ? "success" : "error",
+           content: res.exitCode === 0 ? "✓ Completed" : `✕ Failed (exit ${res.exitCode})`,
+         })
+        return
+      }
+
+      toast.info(`No runner for .${ext} files — open the Terminal tab and use 'run ${activeFile.name}'`)
+    } finally {
+      setIsRunning(false)
+    }
+  }
+
+  const ext = activeFile?.name.split(".").pop()?.toLowerCase() || ""
+  const isHtml = ["html", "htm"].includes(ext)
+  const runLabel = isHtml ? "Preview" : "Run"
 
   return (
-    <>
-      <div className="flex items-center justify-between bg-card border-b border-border h-11 px-2 shrink-0">
-        <div className="flex items-center gap-1 min-w-0 flex-1">
-          <button onClick={toggleSidebar} className="p-2 rounded hover:bg-secondary transition-colors shrink-0" aria-label="Toggle sidebar">
-            <Menu className="w-4 h-4 text-muted-foreground" />
-          </button>
-          <div className="flex items-center text-xs text-muted-foreground overflow-hidden min-w-0">
-            {breadcrumb.length > 0 ? breadcrumb.map((part, i) => (
-              <span key={i} className="flex items-center shrink-0">
-                {i > 0 && <ChevronRight className="w-3 h-3 mx-0.5 shrink-0 opacity-50" />}
-                <span className={i === breadcrumb.length - 1 ? "text-foreground truncate font-medium" : "truncate"}>{part}</span>
-              </span>
-            )) : <span className="text-muted-foreground font-medium">SK Coder</span>}
-          </div>
-        </div>
-        <div className="flex items-center gap-1 shrink-0">
-          <button onClick={handleOpen} className="flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium rounded bg-secondary text-secondary-foreground hover:bg-secondary/80 transition-colors" aria-label="Open file or archive">
-            <FolderOpen className="w-3.5 h-3.5" />
-            <span>Open</span>
-          </button>
-          <button
-            onClick={handleRun}
-            className={`flex items-center gap-1 px-2.5 py-1.5 text-xs font-medium rounded transition-all ${isRunning ? "bg-destructive text-destructive-foreground" : "bg-primary text-primary-foreground hover:bg-primary/90"}`}
-          >
-            {isRunning ? <Square className="w-3 h-3" /> : <Play className="w-3 h-3" />}
-            <span className="hidden sm:inline">{isRunning ? "Stop" : "Run"}</span>
-          </button>
-          <button onClick={() => setAiChatOpen(true)} className="p-2 rounded hover:bg-secondary transition-colors" aria-label="Code analyzer">
-            <Bot className="w-4 h-4 text-primary" />
-          </button>
-          <div className="relative">
-            <button onClick={() => setMenuOpen((v) => !v)} className="p-2 rounded hover:bg-secondary transition-colors" aria-label="Menu">
-              <MoreVertical className="w-4 h-4 text-muted-foreground" />
-            </button>
-            {menuOpen && (
-              <>
-                <div className="fixed inset-0 z-40" onClick={() => setMenuOpen(false)} />
-                <div className="absolute right-0 top-full mt-1 bg-popover border border-border rounded-md shadow-2xl py-1 min-w-[190px] z-50 animate-fade-in">
-                  <button onClick={handleOpenFolder} className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-popover-foreground hover:bg-accent transition-colors">
-                    <FolderOpen className="w-4 h-4" />
-                    Select Folder
-                  </button>
-                  <button onClick={() => { setNewFileOpen(true); setMenuOpen(false); }} className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-popover-foreground hover:bg-accent transition-colors">
-                    <FilePlus className="w-4 h-4" />
-                    New
-                  </button>
-                  <button onClick={() => { downloadProject(); setMenuOpen(false); }} className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-popover-foreground hover:bg-accent transition-colors">
-                    <Download className="w-4 h-4" />
-                    Download Project
-                  </button>
-                  <div className="h-px bg-border my-1" />
-                  <button onClick={() => { setActivePanel("settings"); setMenuOpen(false); }} className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-popover-foreground hover:bg-accent transition-colors">
-                    <Settings className="w-4 h-4" />
-                    Settings
-                  </button>
-                  <Link to="/guide" onClick={() => setMenuOpen(false)} className="w-full flex items-center gap-2.5 px-3 py-2 text-xs text-popover-foreground hover:bg-accent transition-colors">
-                    <HelpCircle className="w-4 h-4" />
-                    User Guide
-                  </Link>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
+    <div className="ide-topbar">
+      <div className="topbar-logo">
+        <div className="topbar-logo-icon">SK</div>
+        <span>Coder</span>
       </div>
-      <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileInput} />
-      <input ref={folderInputRef} type="file" multiple {...({ webkitdirectory: "", directory: "" } as Record<string, string>)} className="hidden" onChange={handleFileInput} />
-      <NewFileDialog open={newFileOpen} onClose={() => setNewFileOpen(false)} parentPath="" />
-    </>
-  );
+
+      {activeFile && (
+        <>
+          <div className="topbar-divider" />
+          <span className="topbar-breadcrumb">
+            {activeFile.name}
+          </span>
+        </>
+      )}
+
+      <div className="topbar-actions">
+        <button
+          className={`topbar-run-btn${isRunning ? " running" : ""}${!activeFile && !isRunning ? " disabled" : ""}`}
+          onClick={handleRun}
+          title={isRunning ? "Stop execution" : activeFile ? `${runLabel} ${activeFile.name}` : "Open a file to run"}
+          style={{ opacity: !activeFile && !isRunning ? 0.5 : 1 }}
+        >
+          {isRunning ? (
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor">
+              <rect x="2" y="2" width="3" height="8" rx="1"/>
+              <rect x="7" y="2" width="3" height="8" rx="1"/>
+            </svg>
+          ) : (
+            <svg width="10" height="10" viewBox="0 0 12 12" fill="currentColor">
+              <polygon points="2,1 11,6 2,11"/>
+            </svg>
+          )}
+          {isRunning ? "Stop" : runLabel}
+        </button>
+
+        <button className="btn-icon" onClick={() => setShowSettings(true)} title="Settings">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <circle cx="12" cy="12" r="3"/>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  )
 }

@@ -1,237 +1,336 @@
-import { useState } from "react";
-import { useIDEStore } from "@/store/ideStore";
-import { X, Search, FolderPlus, FilePlus } from "lucide-react";
-import { FILE_CATEGORIES, generateId, getLanguageFromExtension } from "@/types/ide";
+import { useState, useEffect, useRef } from "react"
+import { useIDEStore } from "@/store/ideStore"
 
-interface Props {
-  open: boolean;
-  onClose: () => void;
-  parentPath: string;
+function getFileTemplate(name: string): string {
+  const ext = name.split(".").pop()?.toLowerCase() || ""
+  switch (ext) {
+    case "html":
+    case "htm":
+      return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>${name.replace(/\.[^.]+$/, "")}</title>
+</head>
+<body>
+
+</body>
+</html>`
+    case "css":
+      return `* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
 }
 
-export default function NewFileDialog({ open, onClose, parentPath }: Props) {
-  const [mode, setMode] = useState<"category" | "custom">("category");
-  const [customName, setCustomName] = useState("");
-  const [search, setSearch] = useState("");
-  const [activeCategory, setActiveCategory] = useState<string | null>(null);
-  const { addFileNode, openFile } = useIDEStore();
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  line-height: 1.6;
+}
+`
+    case "scss":
+    case "sass":
+      return `// Variables
+$primary: #007acc;
+$bg: #ffffff;
 
-  if (!open) return null;
+body {
+  font-family: system-ui, sans-serif;
+  background: $bg;
+}
+`
+    case "js":
+    case "mjs":
+      return `"use strict";
 
-  const handleCreateFromTemplate = (name: string, ext: string, template: string) => {
-    const fileName = ext ? `untitled${ext}` : name;
-    const path = parentPath ? `${parentPath}/${fileName}` : fileName;
-    const node = {
-      id: generateId(),
-      name: fileName,
-      type: "file" as const,
-      path,
-      content: template,
-      language: getLanguageFromExtension(fileName),
-    };
-    addFileNode(parentPath, node);
-    openFile(node);
-    resetAndClose();
-  };
+`
+    case "jsx":
+      return `export default function ${toPascalCase(name.replace(/\.[^.]+$/, ""))}() {
+  return (
+    <div>
 
-  const handleCreateCustom = () => {
-    if (!customName.trim()) return;
-    const path = parentPath ? `${parentPath}/${customName}` : customName;
-    const node = {
-      id: generateId(),
-      name: customName,
-      type: "file" as const,
-      path,
-      content: "",
-      language: getLanguageFromExtension(customName),
-    };
-    addFileNode(parentPath, node);
-    openFile(node);
-    resetAndClose();
-  };
+    </div>
+  )
+}
+`
+    case "ts":
+      return `export {}
+`
+    case "tsx":
+      return `import { useState } from "react"
 
-  const handleCreateFolder = () => {
-    if (!customName.trim()) return;
-    const path = parentPath ? `${parentPath}/${customName}` : customName;
-    addFileNode(parentPath, {
-      id: generateId(),
-      name: customName,
-      type: "folder",
-      path,
-      children: [],
-    });
-    resetAndClose();
-  };
+interface Props {}
 
-  const resetAndClose = () => {
-    setCustomName("");
-    setSearch("");
-    setActiveCategory(null);
-    setMode("category");
-    onClose();
-  };
+export default function ${toPascalCase(name.replace(/\.[^.]+$/, ""))}({}: Props) {
+  return (
+    <div>
 
-  const allTemplates = Object.entries(FILE_CATEGORIES).flatMap(([cat, items]) =>
-    items.map((item) => ({ ...item, category: cat }))
-  );
+    </div>
+  )
+}
+`
+    case "py":
+      return `def main():
+    pass
 
-  const filtered = search
-    ? allTemplates.filter(
-        (t) =>
-          t.name.toLowerCase().includes(search.toLowerCase()) ||
-          t.ext.toLowerCase().includes(search.toLowerCase()) ||
-          t.category.toLowerCase().includes(search.toLowerCase())
-      )
-    : allTemplates;
 
-  const categories = Object.keys(FILE_CATEGORIES);
+if __name__ == "__main__":
+    main()
+`
+    case "cpp":
+    case "cc":
+    case "cxx":
+      return `#include <iostream>
+using namespace std;
+
+int main() {
+    cout << "Hello, World!" << endl;
+    return 0;
+}
+`
+    case "c":
+      return `#include <stdio.h>
+
+int main() {
+    printf("Hello, World!\\n");
+    return 0;
+}
+`
+    case "h":
+      return `#pragma once
+
+`
+    case "java":
+      return `public class ${toPascalCase(name.replace(/\.[^.]+$/, ""))} {
+    public static void main(String[] args) {
+        System.out.println("Hello, World!");
+    }
+}
+`
+    case "kt":
+      return `fun main() {
+    println("Hello, World!")
+}
+`
+    case "rs":
+      return `fn main() {
+    println!("Hello, World!");
+}
+`
+    case "go":
+      return `package main
+
+import "fmt"
+
+func main() {
+    fmt.Println("Hello, World!")
+}
+`
+    case "rb":
+      return `puts "Hello, World!"
+`
+    case "php":
+      return `<?php
+
+echo "Hello, World!";
+`
+    case "swift":
+      return `import Foundation
+
+print("Hello, World!")
+`
+    case "dart":
+      return `void main() {
+  print('Hello, World!');
+}
+`
+    case "sh":
+    case "bash":
+      return `#!/bin/bash
+
+echo "Hello, World!"
+`
+    case "md":
+    case "markdown":
+      return `# ${name.replace(/\.[^.]+$/, "")}
+
+`
+    case "json":
+      return `{
+
+}
+`
+    case "yaml":
+    case "yml":
+      return `# ${name}
+
+`
+    case "xml":
+      return `<?xml version="1.0" encoding="UTF-8"?>
+<root>
+
+</root>
+`
+    case "sql":
+      return `-- SQL Query
+
+SELECT * FROM table_name;
+`
+    case "env":
+      return `# Environment Variables
+# Do not commit this file to git
+
+`
+    case "gitignore":
+      return `node_modules/
+dist/
+.env
+.DS_Store
+*.log
+`
+    default:
+      return ""
+  }
+}
+
+function toPascalCase(str: string): string {
+  return str
+    .replace(/[-_\s]+(.)/g, (_, c) => c.toUpperCase())
+    .replace(/^(.)/, (c) => c.toUpperCase())
+    .replace(/[^a-zA-Z0-9]/g, "") || "Component"
+}
+
+const TEMPLATE_CHIPS: { ext: string; label: string; icon: string }[] = [
+  { ext: "html", label: "HTML", icon: "#e34c26" },
+  { ext: "css", label: "CSS", icon: "#264de4" },
+  { ext: "js", label: "JS", icon: "#f7df1e" },
+  { ext: "ts", label: "TS", icon: "#3178c6" },
+  { ext: "tsx", label: "TSX", icon: "#61dafb" },
+  { ext: "py", label: "Python", icon: "#3572a5" },
+  { ext: "cpp", label: "C++", icon: "#00599c" },
+  { ext: "java", label: "Java", icon: "#b07219" },
+  { ext: "json", label: "JSON", icon: "#cbcb41" },
+  { ext: "md", label: "MD", icon: "#083fa1" },
+  { ext: "sh", label: "Shell", icon: "#4eaa25" },
+  { ext: "php", label: "PHP", icon: "#4f5d95" },
+]
+
+export default function NewFileDialog() {
+  const { newItemParentId, newItemType, setNewItem, addFile, fileTree } = useIDEStore()
+  const [name, setName] = useState("")
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (newItemType) {
+      setName("")
+      setTimeout(() => inputRef.current?.focus(), 50)
+    }
+  }, [newItemType])
+
+  if (!newItemType) return null
+
+  function findParentPath(id: string | null, nodes: typeof fileTree): string {
+    if (!id) return ""
+    for (const n of nodes) {
+      if (n.id === id) return n.path
+      if (n.children) {
+        const found = findParentPath(id, n.children)
+        if (found) return found
+      }
+    }
+    return ""
+  }
+
+  function handleConfirm() {
+    const trimmed = name.trim()
+    if (!trimmed) return
+    const parentPath = findParentPath(newItemParentId, fileTree)
+    const template = newItemType === "file" ? getFileTemplate(trimmed) : ""
+    addFile(parentPath, trimmed, newItemType!, template)
+    setNewItem(null, null)
+    setName("")
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") handleConfirm()
+    if (e.key === "Escape") { setNewItem(null, null); setName("") }
+  }
+
+  function handleChip(ext: string) {
+    const base = name.split(".")[0] || (ext === "md" ? "README" : ext === "json" ? "config" : "index")
+    setName(`${base}.${ext}`)
+    inputRef.current?.focus()
+  }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-end sm:items-center justify-center bg-black/60" onClick={resetAndClose}>
-      <div
-        className="bg-card border border-border rounded-t-2xl sm:rounded-xl w-full sm:max-w-md max-h-[85vh] flex flex-col shadow-2xl animate-slide-up"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="flex items-center justify-between p-3 border-b border-border">
-          <h3 className="text-sm font-semibold text-foreground">
-            {parentPath ? `New in ${parentPath}` : "New File / Folder"}
-          </h3>
-          <button onClick={resetAndClose} className="p-1.5 rounded-full hover:bg-secondary transition-colors">
-            <X className="w-4 h-4" />
-          </button>
+    <div className="new-file-dialog" onClick={() => setNewItem(null, null)}>
+      <div className="new-file-dialog-box" onClick={(e) => e.stopPropagation()}>
+        <div className="new-file-dialog-title">
+          {newItemType === "file" ? (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2" style={{ flexShrink: 0 }}>
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="12" y1="18" x2="12" y2="12"/>
+              <line x1="9" y1="15" x2="15" y2="15"/>
+            </svg>
+          ) : (
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="#e8a853" stroke="none" style={{ flexShrink: 0 }}>
+              <path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+            </svg>
+          )}
+          {newItemType === "file" ? "New File" : "New Folder"}
         </div>
 
-        <div className="flex gap-1 px-3 pt-3">
-          {(["category", "custom"] as const).map((m) => (
-            <button
-              key={m}
-              onClick={() => setMode(m)}
-              className={`px-3 py-1.5 text-xs rounded-md font-medium transition-colors ${
-                mode === m
-                  ? "bg-primary text-primary-foreground"
-                  : "bg-secondary text-secondary-foreground hover:bg-secondary/80"
-              }`}
-            >
-              {m === "category" ? "Templates" : "Custom"}
-            </button>
-          ))}
-        </div>
+        <input
+          ref={inputRef}
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          onKeyDown={handleKeyDown}
+          placeholder={newItemType === "file" ? "filename.js" : "folder-name"}
+          autoFocus
+          style={{ marginBottom: "0.6rem" }}
+        />
 
-        {mode === "category" ? (
-          <>
-            <div className="px-3 pt-2">
-              <div className="relative">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground" />
-                <input
-                  type="text"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Search templates..."
-                  className="w-full bg-secondary text-sm text-foreground pl-8 pr-3 py-2 rounded-md outline-none placeholder:text-muted-foreground/50 focus:ring-1 focus:ring-primary"
-                  autoFocus
-                />
-              </div>
+        {newItemType === "file" && (
+          <div style={{ marginBottom: "0.75rem" }}>
+            <div style={{ fontSize: 10, color: "var(--text-muted)", textTransform: "uppercase", letterSpacing: "0.08em", marginBottom: "0.4rem" }}>
+              Quick select
             </div>
-            {!search && (
-              <div className="flex gap-1.5 px-3 pt-2 overflow-x-auto no-scrollbar">
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.3rem" }}>
+              {TEMPLATE_CHIPS.map((chip) => (
                 <button
-                  onClick={() => setActiveCategory(null)}
-                  className={`px-2.5 py-1 text-[11px] rounded-full whitespace-nowrap transition-colors ${
-                    !activeCategory ? "bg-primary/20 text-primary" : "bg-secondary text-muted-foreground"
-                  }`}
+                  key={chip.ext}
+                  onClick={() => handleChip(chip.ext)}
+                  style={{
+                    padding: "0.15rem 0.5rem",
+                    borderRadius: "10px",
+                    fontSize: 11,
+                    background: "var(--bg-hover)",
+                    border: `1px solid var(--border)`,
+                    color: chip.icon,
+                    cursor: "pointer",
+                    transition: "all 0.12s",
+                  }}
+                  onMouseEnter={(e) => { (e.target as HTMLElement).style.borderColor = chip.icon }}
+                  onMouseLeave={(e) => { (e.target as HTMLElement).style.borderColor = "var(--border)" }}
                 >
-                  All
+                  .{chip.ext}
                 </button>
-                {categories.map((cat) => (
-                  <button
-                    key={cat}
-                    onClick={() => setActiveCategory(cat)}
-                    className={`px-2.5 py-1 text-[11px] rounded-full whitespace-nowrap transition-colors ${
-                      activeCategory === cat ? "bg-primary/20 text-primary" : "bg-secondary text-muted-foreground"
-                    }`}
-                  >
-                    {cat}
-                  </button>
-                ))}
-              </div>
-            )}
-            <div className="flex-1 overflow-y-auto scrollbar-thin p-3">
-              {search ? (
-                <div className="grid grid-cols-2 gap-1.5">
-                  {filtered.map((t, i) => (
-                    <button
-                      key={i}
-                      onClick={() => handleCreateFromTemplate(t.name, t.ext, t.template)}
-                      className="text-left p-2.5 rounded-md text-xs bg-secondary/40 hover:bg-secondary border border-transparent hover:border-border transition-all"
-                    >
-                      <span className="text-foreground font-medium">{t.name}</span>
-                      <span className="text-muted-foreground ml-1 text-[10px]">{t.ext}</span>
-                    </button>
-                  ))}
-                  {filtered.length === 0 && (
-                    <p className="col-span-2 text-center text-xs text-muted-foreground py-4">No matching templates</p>
-                  )}
-                </div>
-              ) : (
-                Object.entries(FILE_CATEGORIES)
-                  .filter(([cat]) => !activeCategory || cat === activeCategory)
-                  .map(([category, items]) => (
-                    <div key={category} className="mb-4">
-                      <h4 className="text-[11px] font-semibold text-muted-foreground mb-2 uppercase tracking-wider">{category}</h4>
-                      <div className="grid grid-cols-2 gap-1.5">
-                        {items.map((item, i) => (
-                          <button
-                            key={i}
-                            onClick={() => handleCreateFromTemplate(item.name, item.ext, item.template)}
-                            className="text-left p-2.5 rounded-md text-xs bg-secondary/40 hover:bg-secondary border border-transparent hover:border-border transition-all"
-                          >
-                            <span className="text-foreground font-medium block">{item.name}</span>
-                            <span className="text-muted-foreground text-[10px]">{item.ext || "(no ext)"}</span>
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                  ))
-              )}
+              ))}
             </div>
-          </>
-        ) : (
-          <div className="p-3 flex flex-col gap-3">
-            <input
-              type="text"
-              value={customName}
-              onChange={(e) => setCustomName(e.target.value)}
-              placeholder="Enter filename (e.g. main.py) or folder name"
-              className="w-full bg-secondary text-sm text-foreground px-3 py-2.5 rounded-md outline-none placeholder:text-muted-foreground/50 focus:ring-1 focus:ring-primary"
-              autoFocus
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleCreateCustom();
-              }}
-            />
-            <div className="flex gap-2">
-              <button
-                onClick={handleCreateCustom}
-                disabled={!customName.trim()}
-                className="flex-1 flex items-center justify-center gap-1.5 bg-primary text-primary-foreground text-xs py-2.5 rounded-md hover:bg-primary/90 disabled:opacity-40 transition-colors font-medium"
-              >
-                <FilePlus className="w-3.5 h-3.5" />
-                Create File
-              </button>
-              <button
-                onClick={handleCreateFolder}
-                disabled={!customName.trim()}
-                className="flex-1 flex items-center justify-center gap-1.5 bg-secondary text-secondary-foreground text-xs py-2.5 rounded-md hover:bg-secondary/80 disabled:opacity-40 transition-colors font-medium"
-              >
-                <FolderPlus className="w-3.5 h-3.5" />
-                Create Folder
-              </button>
-            </div>
-            <p className="text-[10px] text-muted-foreground text-center">
-              Tip: Add any extension like .py, .rs, .custom — all formats supported
-            </p>
           </div>
         )}
+
+        <div className="new-file-dialog-actions">
+          <button className="btn btn-secondary" onClick={() => { setNewItem(null, null); setName("") }}>
+            Cancel
+          </button>
+          <button className="btn btn-primary" onClick={handleConfirm} disabled={!name.trim()}>
+            Create
+          </button>
+        </div>
       </div>
     </div>
-  );
+  )
 }

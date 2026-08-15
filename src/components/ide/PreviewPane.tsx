@@ -1,145 +1,196 @@
-import { useState, useEffect, useCallback } from "react";
-import { useIDEStore } from "@/store/ideStore";
-import { Monitor, Smartphone, Tablet, ExternalLink, RefreshCw, Share2, AlertTriangle } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { useRef, useEffect, useState } from "react"
+import { useIDEStore } from "@/store/ideStore"
+import { buildPreview } from "@/lib/previewBuilder"
+import type { PreviewViewport } from "@/types/ide"
+
+type ViewportConfig = {
+  label: string
+  width: number
+  height: number
+  detail: string
+}
+
+const viewportConfig: Record<PreviewViewport, ViewportConfig> = {
+  mobile: { label: "Mobile", width: 390, height: 844, detail: "390 × 844" },
+  tablet: { label: "Tablet", width: 768, height: 1024, detail: "768 × 1024" },
+  desktop: { label: "Desktop", width: 0, height: 0, detail: "Responsive" },
+}
+
+function RefreshIcon() {
+  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M20 11a8 8 0 1 0 1 4" /><polyline points="20 4 20 11 13 11" /></svg>
+}
+
+function ExternalIcon() {
+  return <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14 3h7v7" /><path d="M10 14 21 3" /><path d="M21 14v5a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5" /></svg>
+}
+
+function BrowserIcon() {
+  return <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8"><rect x="3" y="4" width="18" height="16" rx="2" /><path d="M3 9h18M7 6.5h.01M10 6.5h.01" /></svg>
+}
 
 export default function PreviewPane() {
-  const { previewUrl, openTabs, activeTabId, settings } = useIDEStore();
-  const [viewport, setViewport] = useState<"mobile" | "tablet" | "desktop">(settings.preview.viewport);
-  const [refreshKey, setRefreshKey] = useState(0);
-  const [copied, setCopied] = useState(false);
-  const activeTab = openTabs.find((t) => t.id === activeTabId);
+  const { fileTree, previewKey, settings, updatePreviewSettings, getActiveFile, addTerminalLine } = useIDEStore()
+  const iframeRef = useRef<HTMLIFrameElement>(null)
+  const stageRef = useRef<HTMLDivElement>(null)
+  const [externalUrl, setExternalUrl] = useState("")
+  const [liveUrl, setLiveUrl] = useState("")
+  const [showExternal, setShowExternal] = useState(false)
+  const [loadError, setLoadError] = useState(false)
+  const [previewScale, setPreviewScale] = useState(1)
 
-  const getPreviewContent = useCallback(() => {
-    if (previewUrl) return previewUrl;
-    if (!activeTab) return null;
+  const viewport = settings.preview.viewport
+  const activeFile = getActiveFile()
+  const cfg = viewportConfig[viewport]
 
-    const ext = activeTab.name.split(".").pop()?.toLowerCase();
-    if (ext === "html") {
-      return `data:text/html;charset=utf-8,${encodeURIComponent(activeTab.content)}`;
+  function buildAndSet() {
+    if (showExternal) return
+    const html = buildPreview(fileTree, activeFile?.path)
+    if (iframeRef.current) {
+      iframeRef.current.srcdoc = html
+      setLoadError(false)
     }
-    if (ext === "css") {
-      return `data:text/html;charset=utf-8,${encodeURIComponent(
-        `<!DOCTYPE html><html><head><style>${activeTab.content}</style></head><body><div style="padding:20px;font-family:system-ui"><h1>CSS Preview</h1><p>Your styles are applied to this page.</p><button>Button</button><input type="text" placeholder="Input field"><ul><li>List item 1</li><li>List item 2</li></ul></div></body></html>`
-      )}`;
-    }
-    if (ext === "md") {
-      const escaped = activeTab.content
-        .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
-        .replace(/^### (.+)$/gm, "<h3>$1</h3>")
-        .replace(/^## (.+)$/gm, "<h2>$1</h2>")
-        .replace(/^# (.+)$/gm, "<h1>$1</h1>")
-        .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-        .replace(/\*(.+?)\*/g, "<em>$1</em>")
-        .replace(/`(.+?)`/g, "<code>$1</code>")
-        .replace(/\n/g, "<br>");
-      return `data:text/html;charset=utf-8,${encodeURIComponent(
-        `<!DOCTYPE html><html><head><style>body{font-family:system-ui,-apple-system,sans-serif;padding:24px;color:#d4d4d8;background:#1e1e2e;max-width:720px;margin:0 auto;line-height:1.7}code{background:#11111b;padding:2px 6px;border-radius:3px;font-size:0.9em}h1,h2,h3{color:#cdd6f4;margin-top:1.5em}a{color:#89b4fa}</style></head><body>${escaped}</body></html>`
-      )}`;
-    }
-    if (ext === "svg") {
-      return `data:text/html;charset=utf-8,${encodeURIComponent(
-        `<!DOCTYPE html><html><head><style>body{display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;background:#1e1e2e}</style></head><body>${activeTab.content}</body></html>`
-      )}`;
-    }
-    return null;
-  }, [previewUrl, activeTab]);
+  }
 
-  const previewSrc = getPreviewContent();
-  const viewportWidths = { mobile: "375px", tablet: "768px", desktop: "100%" };
+  useEffect(() => { buildAndSet() }, [previewKey, fileTree, showExternal])
 
   useEffect(() => {
-    if (settings.preview.autoRefresh && previewSrc) {
-      setRefreshKey((k) => k + 1);
+    function handleResize() {
+      if (!stageRef.current || viewport === "desktop") {
+        setPreviewScale(1)
+        return
+      }
+      const bounds = stageRef.current.getBoundingClientRect()
+      const availableWidth = Math.max(0, bounds.width - 32)
+      const availableHeight = Math.max(0, bounds.height - 56)
+      setPreviewScale(Math.min(1, availableWidth / cfg.width, availableHeight / cfg.height))
     }
-  }, [activeTab?.content]);
+    handleResize()
+    const observer = new ResizeObserver(handleResize)
+    if (stageRef.current) observer.observe(stageRef.current)
+    window.addEventListener("resize", handleResize)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener("resize", handleResize)
+    }
+  }, [viewport, cfg.width, cfg.height])
 
-  const handleShare = useCallback(async () => {
-    if (!previewSrc) return;
-    const text = previewSrc.startsWith("data:") ? previewSrc : window.location.href;
-    try {
-      if (navigator.share) await navigator.share({ title: activeTab?.name || "SK Coder Preview", text });
-      else await navigator.clipboard.writeText(text);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {}
-  }, [previewSrc, activeTab?.name]);
+  useEffect(() => {
+    function handle(e: MessageEvent) {
+      if (e.data?.type === "console") {
+        const level = e.data.level || "log"
+        const msg = (e.data.args as string[]).join(" ")
+        addTerminalLine({ type: level === "error" ? "error" : "output", content: `[preview] ${msg}` })
+      }
+      if (e.data?.type === "error") {
+        addTerminalLine({ type: "error", content: `[preview] ${e.data.message} (line ${e.data.line})` })
+      }
+    }
+    window.addEventListener("message", handle)
+    return () => window.removeEventListener("message", handle)
+  }, [addTerminalLine])
+
+  function handleRefresh() {
+    if (showExternal && iframeRef.current && liveUrl) iframeRef.current.src = liveUrl
+    else buildAndSet()
+  }
+
+  function handleGoUrl() {
+    const url = externalUrl.trim()
+    if (!url) return
+    const full = url.startsWith("http") ? url : `https://${url}`
+    setLiveUrl(full)
+    setShowExternal(true)
+    setLoadError(false)
+    if (iframeRef.current) {
+      iframeRef.current.removeAttribute("srcdoc")
+      iframeRef.current.src = full
+    }
+  }
+
+  function handleOpenExternal() {
+    if (showExternal && liveUrl) {
+      window.open(liveUrl, "_blank")
+      return
+    }
+    const html = buildPreview(fileTree, activeFile?.path)
+    const url = URL.createObjectURL(new Blob([html], { type: "text/html" }))
+    window.open(url, "_blank")
+    setTimeout(() => URL.revokeObjectURL(url), 5000)
+  }
+
+  function handleLocalPreview() {
+    setShowExternal(false)
+    setLiveUrl("")
+    setLoadError(false)
+    setTimeout(buildAndSet, 0)
+  }
 
   return (
-    <div className="h-full flex flex-col bg-editor-bg">
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border shrink-0 gap-2">
-        <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">Preview</span>
-        <div className="flex items-center gap-0.5">
-          {(
-            [
-              { mode: "mobile" as const, icon: Smartphone, label: "375px" },
-              { mode: "tablet" as const, icon: Tablet, label: "768px" },
-              { mode: "desktop" as const, icon: Monitor, label: "100%" },
-            ] as const
-          ).map(({ mode, icon: Icon }) => (
-            <button
-              key={mode}
-              onClick={() => setViewport(mode)}
-              className={cn(
-                "p-1.5 rounded transition-colors",
-                viewport === mode ? "bg-primary text-primary-foreground" : "hover:bg-secondary text-muted-foreground"
-              )}
-            >
-              <Icon className="w-3.5 h-3.5" />
-            </button>
-          ))}
-          <div className="w-px h-4 bg-border mx-1" />
-          <button
-            onClick={() => setRefreshKey((k) => k + 1)}
-            className="p-1.5 rounded hover:bg-secondary text-muted-foreground transition-colors"
-          >
-            <RefreshCw className="w-3.5 h-3.5" />
-          </button>
-          <button
-            onClick={handleShare}
-            className="p-1.5 rounded hover:bg-secondary text-muted-foreground transition-colors"
-          >
-            <Share2 className="w-3.5 h-3.5" />
-          </button>
-          {previewSrc && (
-            <button
-              onClick={() => window.open(previewSrc, "_blank")}
-              className="p-1.5 rounded hover:bg-secondary text-muted-foreground transition-colors"
-            >
-              <ExternalLink className="w-3.5 h-3.5" />
-            </button>
-          )}
+    <div className="preview-panel">
+      <div className="preview-toolbar">
+        <div className="preview-presets" role="group" aria-label="Preview viewport">
+          {(["mobile", "tablet", "desktop"] as PreviewViewport[]).map((v) => {
+            const preset = viewportConfig[v]
+            return (
+              <button
+                type="button"
+                key={v}
+                className={`preview-viewport-btn ${viewport === v ? "active" : ""}`}
+                onClick={() => updatePreviewSettings({ viewport: v })}
+                title={`${preset.label} ${preset.detail}`}
+              >
+                <span className={`preview-preset-mark ${v}`} aria-hidden="true" />
+                <span>{preset.label}</span>
+                <small>{preset.detail}</small>
+              </button>
+            )
+          })}
+        </div>
+        <div className="preview-url-bar">
+          <BrowserIcon />
+          <input value={externalUrl} onChange={(e) => setExternalUrl(e.target.value)} placeholder="Preview a URL" onKeyDown={(e) => e.key === "Enter" && handleGoUrl()} />
+        </div>
+        <button type="button" className="btn btn-secondary preview-go-btn" onClick={handleGoUrl}>Go</button>
+        {showExternal && (
+          <button type="button" className="btn btn-ghost preview-local-btn" onClick={handleLocalPreview}>Local</button>
+        )}
+        <div className="preview-toolbar-actions">
+          {viewport !== "desktop" && <span className="preview-scale-readout">{Math.round(previewScale * 100)}% scale</span>}
+          <button type="button" className="btn-icon" onClick={handleRefresh} title="Refresh preview" aria-label="Refresh preview"><RefreshIcon /></button>
+          <button type="button" className="btn-icon" onClick={handleOpenExternal} title="Open in new tab" aria-label="Open in new tab"><ExternalIcon /></button>
         </div>
       </div>
-      {copied && (
-        <div className="bg-success/20 text-success text-[11px] text-center py-1">
-          Preview link copied
-        </div>
-      )}
-      <div className="flex-1 flex items-start justify-center overflow-auto p-2 bg-terminal-bg">
-        {previewSrc ? (
-          <iframe
-            key={refreshKey}
-            src={previewSrc}
-            className="bg-background border border-border rounded-md shadow-lg"
-            style={{
-              width: viewportWidths[viewport],
-              height: "100%",
-              maxWidth: "100%",
-            }}
-            sandbox="allow-scripts allow-same-origin allow-forms allow-popups allow-modals"
-            title="Preview"
-          />
+
+      <div className={`preview-content-area ${viewport === "desktop" ? "is-responsive" : "is-fixed"}`} ref={stageRef}>
+        {viewport === "desktop" ? (
+          <div className="preview-responsive-frame">
+            <iframe ref={iframeRef} title="Preview" sandbox="allow-scripts allow-same-origin allow-modals allow-forms allow-popups" allow="camera; microphone" onError={() => setLoadError(true)} />
+          </div>
         ) : (
-          <div className="flex flex-col items-center justify-center h-full text-muted-foreground gap-3">
-            <AlertTriangle className="w-12 h-12 opacity-15" />
-            <p className="text-sm font-medium">No preview available</p>
-            <p className="text-xs text-muted-foreground/60 text-center max-w-[240px]">
-              Open an HTML file or click Run to preview your project
-            </p>
+          <div className="preview-fixed-stage">
+            <div className="preview-viewport-shell" style={{ width: cfg.width * previewScale, height: cfg.height * previewScale }}>
+              <div
+                className={`preview-viewport-frame ${viewport}`}
+                style={{ width: cfg.width, height: cfg.height, transform: `scale(${previewScale})` }}
+              >
+                <iframe ref={iframeRef} title="Preview" sandbox="allow-scripts allow-same-origin allow-modals allow-forms allow-popups" allow="camera; microphone" onError={() => setLoadError(true)} />
+              </div>
+            </div>
+            <div className="preview-viewport-caption">
+              <strong>{cfg.label}</strong>
+              <span>{cfg.detail}px viewport</span>
+            </div>
+          </div>
+        )}
+
+        {loadError && (
+          <div className="preview-error-banner">
+            <span className="preview-error-mark">!</span>
+            <span>This URL blocks embedding.</span>
+            <button type="button" onClick={handleOpenExternal}>Open in browser tab</button>
           </div>
         )}
       </div>
     </div>
-  );
+  )
 }

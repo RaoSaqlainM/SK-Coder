@@ -1,495 +1,467 @@
-import { useIDEStore } from "@/store/ideStore";
-import { Slider } from "@/components/ui/slider";
-import { Switch } from "@/components/ui/switch";
-import { Label } from "@/components/ui/label";
-import {
-  Select, SelectContent, SelectItem, SelectTrigger, SelectValue,
-} from "@/components/ui/select";
-import { Code, Monitor, Cpu, HardDrive, Info, ChevronRight, KeyRound, CheckCircle2, XCircle, Loader2, Cloud, Smartphone, Bell } from "lucide-react";
-import { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
-import { clearStoredKey, getBaseUrl, getModel, getStoredKey, isKeyValidated, setModel, validateKey } from "@/lib/aiClient";
-import TermuxSetup from "@/components/ide/TermuxSetup";
-import { clearGithubToken, fetchGithubUser, getGithubToken } from "@/lib/githubAuth";
-import { notificationsEnabled, requestWebPermission, setNotificationsEnabled } from "@/lib/notifications";
+import { useState } from "react"
+import { useIDEStore } from "@/store/ideStore"
+import { validateGitHubToken } from "@/lib/githubClient"
+import { toast } from "sonner"
 
-type SettingsSection = "editor" | "preview" | "ai" | "storage" | "cloudshell" | "termux" | "notifications" | "about" | null;
+type ToggleProps = { checked: boolean; onChange: (v: boolean) => void }
+function Toggle({ checked, onChange }: ToggleProps) {
+  return (
+    <label className="toggle">
+      <input type="checkbox" checked={checked} onChange={(e) => onChange(e.target.checked)} />
+      <span className="toggle-track" />
+    </label>
+  )
+}
+
+type NavItem = { id: string; label: string; icon: React.ReactNode }
+
+const NAV: NavItem[] = [
+  {
+    id: "editor", label: "Editor",
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>,
+  },
+  {
+    id: "ai", label: "SK-AI",
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="3" y="3" width="18" height="18" rx="4"/><path d="M9 9h.01M15 9h.01M9 15h6"/></svg>,
+  },
+  {
+    id: "github", label: "GitHub",
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M9 19c-5 1.5-5-2.5-7-3m14 6v-3.87a3.37 3.37 0 0 0-.94-2.61c3.14-.35 6.44-1.54 6.44-7A5.44 5.44 0 0 0 20 4.77 5.07 5.07 0 0 0 19.91 1S18.73.65 16 2.48a13.38 13.38 0 0 0-7 0C6.27.65 5.09 1 5.09 1A5.07 5.07 0 0 0 5 4.77a5.44 5.44 0 0 0-1.5 3.78c0 5.42 3.3 6.61 6.44 7A3.37 3.37 0 0 0 9 18.13V22"/></svg>,
+  },
+  {
+    id: "preview", label: "Preview",
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>,
+  },
+  {
+    id: "about", label: "About",
+    icon: <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>,
+  },
+]
+
+declare global {
+  interface Window {
+    puter?: {
+      auth: { signIn: () => Promise<void>; isSignedIn: () => boolean }
+      ai: {
+        chat: (msgs: { role: string; content: string }[] | string, opts?: { model?: string }) => Promise<{ message: { content: Array<{ text: string }> } }>
+      }
+    }
+  }
+}
+
+async function loadPuter(): Promise<typeof window.puter> {
+  if (window.puter) return window.puter
+  return new Promise((resolve, reject) => {
+    const s = document.createElement("script")
+    s.src = "https://js.puter.com/v2/"
+    s.onload = () => resolve(window.puter)
+    s.onerror = () => reject(new Error("Failed to load Puter.js"))
+    document.head.appendChild(s)
+  })
+}
+
+async function testApiKey(key: string): Promise<"valid" | "invalid" | "expired"> {
+  try {
+    let url = ""
+    let model = ""
+    if (key.startsWith("sk-ant-")) {
+      url = "https://api.anthropic.com/v1/messages"
+      const r = await fetch(url, {
+        method: "POST",
+        headers: { "x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json" },
+        body: JSON.stringify({ model: "claude-3-haiku-20240307", max_tokens: 5, messages: [{ role: "user", content: "hi" }] }),
+      })
+      if (r.status === 401 || r.status === 403) return "invalid"
+      if (r.status === 429) return "expired"
+      return r.ok ? "valid" : "invalid"
+    }
+    if (key.startsWith("AIza")) {
+      url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${key}`
+      const r = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ contents: [{ parts: [{ text: "hi" }] }] }) })
+      if (r.status === 400 || r.status === 403) return "invalid"
+      return r.ok ? "valid" : "invalid"
+    }
+    url = "https://api.openai.com/v1/chat/completions"
+    model = "gpt-3.5-turbo"
+    if (key.startsWith("sk-or-")) {
+      url = "https://openrouter.ai/api/v1/chat/completions"
+      model = "openai/gpt-3.5-turbo"
+    } else if (key.startsWith("gsk_")) {
+      url = "https://api.groq.com/openai/v1/chat/completions"
+      model = "llama3-8b-8192"
+    }
+    const r = await fetch(url, {
+      method: "POST",
+      headers: { Authorization: `Bearer ${key}`, "content-type": "application/json" },
+      body: JSON.stringify({ model, max_tokens: 5, messages: [{ role: "user", content: "hi" }] }),
+    })
+    if (r.status === 401 || r.status === 403) return "invalid"
+    if (r.status === 429) return "expired"
+    return r.ok ? "valid" : "invalid"
+  } catch {
+    return "invalid"
+  }
+}
 
 export default function SettingsPanel() {
-  const { settings, updateSettings } = useIDEStore();
-  const { editor, preview, ai, storage } = settings;
-  const [activeSection, setActiveSection] = useState<SettingsSection>(null);
+  const {
+    settings, settingsTab, setSettingsTab, setShowSettings,
+    updateEditorSettings, updateAISettings,
+    updateGithubSettings, updatePreviewSettings,
+  } = useIDEStore()
 
-  const updateEditor = (partial: Partial<typeof editor>) =>
-    updateSettings({ editor: { ...editor, ...partial } });
-  const updatePreview = (partial: Partial<typeof preview>) =>
-    updateSettings({ preview: { ...preview, ...partial } });
+  const [keyInput, setKeyInput] = useState(settings.ai.apiKey)
+  const [tokenInput, setTokenInput] = useState(settings.github.token)
+  const [showKey, setShowKey] = useState(false)
+  const [showToken, setShowToken] = useState(false)
+  const [checking, setChecking] = useState(false)
+  const [puterConnecting, setPuterConnecting] = useState(false)
+  const [puterConnected, setPuterConnected] = useState(() => {
+    try { return !!window.puter?.auth?.isSignedIn() } catch { return false }
+  })
 
-  const sections = [
-    { id: "editor" as const, icon: Code, label: "Editor", desc: "Font, tabs, minimap, wrap" },
-    { id: "preview" as const, icon: Monitor, label: "Preview", desc: "Viewport, auto-refresh" },
-    { id: "ai" as const, icon: Cpu, label: "AI Assistant", desc: "Your own API key, model" },
-    { id: "cloudshell" as const, icon: Cloud, label: "Cloud Shell", desc: "GitHub Codespaces sign-in" },
-    { id: "termux" as const, icon: Smartphone, label: "Termux (Android)", desc: "On-device Linux runtime" },
-    { id: "notifications" as const, icon: Bell, label: "Notifications", desc: "Build/run completion alerts" },
-    { id: "storage" as const, icon: HardDrive, label: "Storage", desc: "SD card, workspace path" },
-    { id: "about" as const, icon: Info, label: "About", desc: "Version, credits, legal" },
-  ];
-
-  if (activeSection === null) {
-    return (
-      <div className="h-full overflow-y-auto scrollbar-thin bg-editor-bg">
-        <div className="px-4 py-3 border-b border-border">
-          <h2 className="text-sm font-semibold text-foreground">Settings</h2>
-          <p className="text-[11px] text-muted-foreground mt-0.5">Configure your development environment</p>
-        </div>
-        <div className="py-1">
-          {sections.map((s) => (
-            <button
-              key={s.id}
-              onClick={() => setActiveSection(s.id)}
-              className="w-full flex items-center gap-3 px-4 py-3 hover:bg-secondary/40 transition-colors"
-            >
-              <div className="w-8 h-8 rounded-lg bg-primary/10 flex items-center justify-center shrink-0">
-                <s.icon className="w-4 h-4 text-primary" />
-              </div>
-              <div className="flex-1 text-left min-w-0">
-                <p className="text-sm font-medium text-foreground">{s.label}</p>
-                <p className="text-[11px] text-muted-foreground">{s.desc}</p>
-              </div>
-              <ChevronRight className="w-4 h-4 text-muted-foreground shrink-0" />
-            </button>
-          ))}
-        </div>
-      </div>
-    );
-  }
-
-  const renderBack = (title: string) => (
-    <div className="flex items-center gap-2 px-4 py-3 border-b border-border">
-      <button onClick={() => setActiveSection(null)} className="text-primary text-xs font-medium">
-        ← Back
-      </button>
-      <h3 className="text-sm font-semibold text-foreground">{title}</h3>
-    </div>
-  );
-
-  if (activeSection === "editor") {
-    return (
-      <div className="h-full overflow-y-auto scrollbar-thin bg-editor-bg">
-        {renderBack("Editor")}
-        <div className="p-4 space-y-5">
-          <div>
-            <Label className="text-xs text-muted-foreground">Font Size: {editor.fontSize}px</Label>
-            <Slider value={[editor.fontSize]} onValueChange={([v]) => updateEditor({ fontSize: v })} min={10} max={28} step={1} className="mt-2" />
-          </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Tab Size</Label>
-            <Select value={String(editor.tabSize)} onValueChange={(v) => updateEditor({ tabSize: Number(v) })}>
-              <SelectTrigger className="h-9 text-xs mt-1"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="2">2 spaces</SelectItem>
-                <SelectItem value="4">4 spaces</SelectItem>
-                <SelectItem value="8">8 spaces</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Theme</Label>
-            <Select value={editor.theme} onValueChange={(v) => updateEditor({ theme: v as any })}>
-              <SelectTrigger className="h-9 text-xs mt-1"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="vs-dark">Dark</SelectItem>
-                <SelectItem value="light">Light</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Cursor Style</Label>
-            <Select value={editor.cursorStyle} onValueChange={(v) => updateEditor({ cursorStyle: v as any })}>
-              <SelectTrigger className="h-9 text-xs mt-1"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="line">Line</SelectItem>
-                <SelectItem value="block">Block</SelectItem>
-                <SelectItem value="underline">Underline</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Line Numbers</Label>
-            <Select value={editor.lineNumbers} onValueChange={(v) => updateEditor({ lineNumbers: v as any })}>
-              <SelectTrigger className="h-9 text-xs mt-1"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="on">On</SelectItem>
-                <SelectItem value="off">Off</SelectItem>
-                <SelectItem value="relative">Relative</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Whitespace</Label>
-            <Select value={editor.renderWhitespace} onValueChange={(v) => updateEditor({ renderWhitespace: v as any })}>
-              <SelectTrigger className="h-9 text-xs mt-1"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="none">None</SelectItem>
-                <SelectItem value="boundary">Boundary</SelectItem>
-                <SelectItem value="selection">Selection</SelectItem>
-                <SelectItem value="all">All</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <SettingsToggle label="Word Wrap" checked={editor.wordWrap === "on"} onChange={(v) => updateEditor({ wordWrap: v ? "on" : "off" })} />
-          <SettingsToggle label="Minimap" checked={editor.minimap} onChange={(v) => updateEditor({ minimap: v })} />
-          <SettingsToggle label="Bracket Pairs" checked={editor.bracketPairs} onChange={(v) => updateEditor({ bracketPairs: v })} />
-          <SettingsToggle label="Auto Save" checked={editor.autoSave} onChange={(v) => updateEditor({ autoSave: v })} />
-          <SettingsToggle label="Smooth Scrolling" checked={editor.smoothScrolling} onChange={(v) => updateEditor({ smoothScrolling: v })} />
-        </div>
-      </div>
-    );
-  }
-
-  if (activeSection === "preview") {
-    return (
-      <div className="h-full overflow-y-auto scrollbar-thin bg-editor-bg">
-        {renderBack("Preview")}
-        <div className="p-4 space-y-5">
-          <div>
-            <Label className="text-xs text-muted-foreground">Default Viewport</Label>
-            <Select value={preview.viewport} onValueChange={(v) => updatePreview({ viewport: v as any })}>
-              <SelectTrigger className="h-9 text-xs mt-1"><SelectValue /></SelectTrigger>
-              <SelectContent>
-                <SelectItem value="mobile">Mobile (375px)</SelectItem>
-                <SelectItem value="tablet">Tablet (768px)</SelectItem>
-                <SelectItem value="desktop">Desktop (100%)</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <SettingsToggle label="Auto Refresh" checked={preview.autoRefresh} onChange={(v) => updatePreview({ autoRefresh: v })} />
-          <SettingsToggle label="Show Errors" checked={preview.showErrors} onChange={(v) => updatePreview({ showErrors: v })} />
-        </div>
-      </div>
-    );
-  }
-
-  if (activeSection === "ai") {
-    return (
-      <div className="h-full overflow-y-auto scrollbar-thin bg-editor-bg">
-        {renderBack("AI Code Analyzer")}
-        <AIKeySection />
-        <div className="p-4 space-y-5 border-t border-border">
-          <SettingsToggle label="Auto scan after edits" checked={ai.autoAnalyze} onChange={(v) => updateSettings({ ai: { ...ai, autoAnalyze: v } })} />
-          <div className="bg-secondary/30 rounded-lg p-3">
-            <p className="text-[11px] text-muted-foreground leading-relaxed">
-              AI calls go directly from your browser using your own key.
-              Your key never touches our servers. Conversation memory is stored only on this device.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (activeSection === "cloudshell") {
-    return (
-      <div className="h-full overflow-y-auto scrollbar-thin bg-editor-bg">
-        {renderBack("Cloud Shell")}
-        <CloudShellSection />
-      </div>
-    );
-  }
-
-  if (activeSection === "termux") {
-    return (
-      <div className="h-full overflow-y-auto scrollbar-thin bg-editor-bg">
-        {renderBack("Termux (Android)")}
-        <TermuxSetup />
-      </div>
-    );
-  }
-
-  if (activeSection === "notifications") {
-    return (
-      <div className="h-full overflow-y-auto scrollbar-thin bg-editor-bg">
-        {renderBack("Notifications")}
-        <NotificationsSection />
-      </div>
-    );
-  }
-
-  if (activeSection === "storage") {
-    return (
-      <div className="h-full overflow-y-auto scrollbar-thin bg-editor-bg">
-        {renderBack("Storage")}
-        <div className="p-4 space-y-5">
-          <SettingsToggle
-            label="Mobile: Use External Storage (SD Card)"
-            checked={storage.useExternalStorage}
-            onChange={(v) => updateSettings({ storage: { ...storage, useExternalStorage: v } })}
-          />
-          <div>
-            <Label className="text-xs text-muted-foreground">Mobile Workspace Path</Label>
-            <input
-              type="text"
-              value={storage.mobileWorkspacePath}
-              onChange={(e) => updateSettings({ storage: { ...storage, mobileWorkspacePath: e.target.value, workspacePath: e.target.value } })}
-              className="w-full bg-secondary text-xs text-foreground px-3 py-2 rounded-md mt-1 outline-none focus:ring-1 focus:ring-primary"
-            />
-          </div>
-          <div>
-            <Label className="text-xs text-muted-foreground">Browser Download Folder</Label>
-            <input
-              type="text"
-              value={storage.browserDownloadPath}
-              onChange={(e) => updateSettings({ storage: { ...storage, browserDownloadPath: e.target.value } })}
-              className="w-full bg-secondary text-xs text-foreground px-3 py-2 rounded-md mt-1 outline-none focus:ring-1 focus:ring-primary"
-            />
-          </div>
-          <div className="bg-secondary/30 rounded-lg p-3">
-            <p className="text-[11px] text-muted-foreground">
-              When external storage is enabled, all project files, packages, and cache
-              will be stored on the SD card to save internal storage space.
-              This is recommended for devices with limited storage.
-            </p>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  if (activeSection === "about") {
-    return (
-      <div className="h-full overflow-y-auto scrollbar-thin bg-editor-bg">
-        {renderBack("About")}
-        <div className="p-4 space-y-4">
-          <div className="text-center py-4">
-            <div className="w-14 h-14 rounded-full overflow-hidden mx-auto mb-3 ring-2 ring-primary/30">
-              <img src="/saqlain.jpg" alt="Saqlain King" className="w-full h-full object-cover" onError={(e) => { (e.target as HTMLImageElement).style.display="none"; }} />
-            </div>
-            <h3 className="text-base font-bold text-foreground">SK Coder</h3>
-            <p className="text-xs text-muted-foreground">Version 2.0.0</p>
-            <p className="text-xs text-muted-foreground mt-1">by Saqlain King</p>
-          </div>
-          <div className="border-t border-border pt-4 space-y-2">
-            <p className="text-xs text-muted-foreground">
-              A professional mobile-first integrated development environment.
-              Write, edit, and preview code on any device.
-            </p>
-          </div>
-          <div className="border-t border-border pt-4 space-y-2">
-            <Link to="/privacy" className="block text-xs text-primary hover:underline">Privacy Policy</Link>
-            <Link to="/terms" className="block text-xs text-primary hover:underline">Terms of Service</Link>
-            <Link to="/guide" className="block text-xs text-primary hover:underline">User Guide</Link>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  return null;
-}
-
-function SettingsToggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
-  return (
-    <div className="flex items-center justify-between">
-      <Label className="text-xs text-muted-foreground">{label}</Label>
-      <Switch checked={checked} onCheckedChange={onChange} />
-    </div>
-  );
-}
-
-function AIKeySection() {
-  const [keyInput, setKeyInput] = useState("");
-  const [baseUrl, setBaseUrlState] = useState(getBaseUrl());
-  const [model, setModelState] = useState(getModel());
-  const [status, setStatus] = useState<"idle" | "checking" | "valid" | "invalid">("idle");
-  const [message, setMessage] = useState("");
-  const [credits, setCredits] = useState<number | null>(null);
-
-  useEffect(() => {
-    if (isKeyValidated()) {
-      setStatus("valid");
-      const k = getStoredKey();
-      setKeyInput(k ? `${k.slice(0, 10)}${"\u2022".repeat(Math.max(0, k.length - 14))}${k.slice(-4)}` : "");
-      setMessage("Connected");
+  async function handleConnectKey() {
+    if (!keyInput.trim()) { toast.error("Paste your API key first"); return }
+    setChecking(true)
+    try {
+      const status = await testApiKey(keyInput.trim())
+      if (status === "valid") {
+        updateAISettings({ apiKey: keyInput.trim(), keyStatus: "valid", usePuter: false })
+        toast.success("SK-AI connected!")
+      } else if (status === "expired") {
+        updateAISettings({ apiKey: keyInput.trim(), keyStatus: "expired" })
+        toast.error("Key has no remaining credits")
+      } else {
+        updateAISettings({ keyStatus: "invalid" })
+        toast.error("Invalid API key — try again")
+      }
+    } finally {
+      setChecking(false)
     }
-  }, []);
+  }
 
-  const handleConnect = async () => {
-    const raw = keyInput.includes("\u2022") ? getStoredKey() : keyInput;
-    setStatus("checking");
-    setMessage("Validating key...");
-    const result = await validateKey(raw, baseUrl);
-    if (result.ok) {
-      setStatus("valid");
-      setMessage(result.message);
-      setCredits(result.remainingCredits ?? null);
+  async function handleConnectPuter() {
+    setPuterConnecting(true)
+    try {
+      const puter = await loadPuter()
+      if (!puter) { toast.error("Failed to load Puter.js"); return }
+      if (!puter.auth.isSignedIn()) {
+        await puter.auth.signIn()
+      }
+      if (puter.auth.isSignedIn()) {
+        setPuterConnected(true)
+        updateAISettings({ usePuter: true })
+        toast.success("Free SK-AI connected via Puter!")
+      }
+    } catch {
+      toast.error("Puter sign-in was cancelled or failed")
+    } finally {
+      setPuterConnecting(false)
+    }
+  }
+
+  async function handleValidateToken() {
+    if (!tokenInput.trim()) { toast.error("Paste your GitHub token first"); return }
+    const { valid, username } = await validateGitHubToken(tokenInput.trim())
+    if (valid) {
+      updateGithubSettings({ token: tokenInput.trim(), username })
+      toast.success(`Connected as @${username}`)
     } else {
-      setStatus("invalid");
-      setMessage(result.message);
-      setCredits(null);
+      toast.error("Invalid GitHub token")
     }
-  };
+  }
 
-  const handleDisconnect = () => {
-    clearStoredKey();
-    setStatus("idle");
-    setMessage("");
-    setKeyInput("");
-    setCredits(null);
-  };
-
-  const handleModelChange = (m: string) => {
-    setModelState(m);
-    setModel(m);
-  };
+  const keyStatus = settings.ai.keyStatus
 
   return (
-    <div className="p-4 space-y-3 bg-secondary/20">
-      <div className="flex items-center gap-2">
-        <KeyRound className="w-4 h-4 text-primary" />
-        <Label className="text-xs font-semibold text-foreground">AI API Key</Label>
-      </div>
-      <div>
-        <Label className="text-[11px] text-muted-foreground">API Base URL</Label>
-        <input
-          type="url"
-          value={baseUrl}
-          onChange={(e) => { setBaseUrlState(e.target.value); setStatus("idle"); setMessage(""); }}
-          className="w-full bg-background text-xs text-foreground px-3 py-2 rounded-md mt-1 outline-none focus:ring-1 focus:ring-primary border border-border"
-          autoComplete="off"
-          spellCheck={false}
-        />
-      </div>
-      <div className="flex gap-2">
-        <input
-          type="password"
-          value={keyInput}
-          onChange={(e) => { setKeyInput(e.target.value); setStatus("idle"); setMessage(""); }}
-          placeholder=""
-          className="flex-1 bg-background text-xs text-foreground px-3 py-2 rounded-md outline-none focus:ring-1 focus:ring-primary border border-border"
-          autoComplete="off"
-          spellCheck={false}
-        />
-        {status === "valid" ? (
-          <button onClick={handleDisconnect} className="px-3 py-2 rounded-md bg-secondary text-xs font-medium hover:bg-secondary/80">
-            Disconnect
+    <div className="settings-overlay" onClick={() => setShowSettings(false)}>
+      <div className="settings-panel" onClick={(e) => e.stopPropagation()}>
+        <div className="settings-header">
+          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--accent)" strokeWidth="2">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+            </svg>
+            <h2>Settings</h2>
+          </div>
+          <button className="btn-icon" onClick={() => setShowSettings(false)} title="Close">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/>
+            </svg>
           </button>
-        ) : (
-          <button
-            onClick={handleConnect}
-            disabled={status === "checking" || !keyInput.trim()}
-            className="px-3 py-2 rounded-md bg-primary text-primary-foreground text-xs font-medium hover:bg-primary/90 disabled:opacity-40 flex items-center gap-1.5"
-          >
-            {status === "checking" && <Loader2 className="w-3 h-3 animate-spin" />}
-            Connect
-          </button>
-        )}
+        </div>
+
+        <div className="settings-body">
+          <nav className="settings-nav">
+            {NAV.map((item) => (
+              <div
+                key={item.id}
+                className={`settings-nav-item ${settingsTab === item.id ? "active" : ""}`}
+                onClick={() => setSettingsTab(item.id)}
+              >
+                {item.icon}
+                <span>{item.label}</span>
+              </div>
+            ))}
+          </nav>
+
+          <div className="settings-content">
+
+            {settingsTab === "editor" && (
+              <>
+                <div className="settings-section">
+                  <div className="settings-section-title">Appearance</div>
+                  <div className="settings-row">
+                    <label>Font Size</label>
+                    <input
+                      type="number" min={10} max={24} style={{ maxWidth: 70 }}
+                      value={settings.editor.fontSize}
+                      onChange={(e) => updateEditorSettings({ fontSize: Number(e.target.value) })}
+                    />
+                  </div>
+                  <div className="settings-row">
+                    <label>Font Family</label>
+                    <select value={settings.editor.fontFamily} onChange={(e) => updateEditorSettings({ fontFamily: e.target.value })} style={{ maxWidth: 190 }}>
+                      <option value="'JetBrains Mono', 'Fira Code', monospace">JetBrains Mono</option>
+                      <option value="'Fira Code', monospace">Fira Code</option>
+                      <option value="'Cascadia Code', monospace">Cascadia Code</option>
+                      <option value="'Courier New', monospace">Courier New</option>
+                      <option value="monospace">System Mono</option>
+                    </select>
+                  </div>
+                  <div className="settings-row">
+                    <label>Tab Size</label>
+                    <select style={{ maxWidth: 80 }} value={settings.editor.tabSize} onChange={(e) => updateEditorSettings({ tabSize: Number(e.target.value) })}>
+                      <option value={2}>2 spaces</option>
+                      <option value={4}>4 spaces</option>
+                      <option value={8}>8 spaces</option>
+                    </select>
+                  </div>
+                  <div className="settings-row">
+                    <label>Cursor Style</label>
+                    <select style={{ maxWidth: 110 }} value={settings.editor.cursorStyle} onChange={(e) => updateEditorSettings({ cursorStyle: e.target.value as "line" | "block" | "underline" })}>
+                      <option value="line">Line</option>
+                      <option value="block">Block</option>
+                      <option value="underline">Underline</option>
+                    </select>
+                  </div>
+                </div>
+                <div className="settings-section">
+                  <div className="settings-section-title">Behavior</div>
+                  <div className="settings-row"><label>Word Wrap</label><Toggle checked={settings.editor.wordWrap === "on"} onChange={(v) => updateEditorSettings({ wordWrap: v ? "on" : "off" })} /></div>
+                  <div className="settings-row"><label>Minimap</label><Toggle checked={settings.editor.minimap} onChange={(v) => updateEditorSettings({ minimap: v })} /></div>
+                  <div className="settings-row"><label>Line Numbers</label><Toggle checked={settings.editor.lineNumbers === "on"} onChange={(v) => updateEditorSettings({ lineNumbers: v ? "on" : "off" })} /></div>
+                  <div className="settings-row"><label>Auto Save</label><Toggle checked={settings.editor.autoSave} onChange={(v) => updateEditorSettings({ autoSave: v })} /></div>
+                  <div className="settings-row"><label>Bracket Colors</label><Toggle checked={settings.editor.bracketPairs} onChange={(v) => updateEditorSettings({ bracketPairs: v })} /></div>
+                  <div className="settings-row"><label>Smooth Scroll</label><Toggle checked={settings.editor.smoothScrolling} onChange={(v) => updateEditorSettings({ smoothScrolling: v })} /></div>
+                </div>
+              </>
+            )}
+
+            {settingsTab === "ai" && (
+              <>
+                <div className="settings-section">
+                  <div className="settings-section-title">Free SK-AI</div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: "0.75rem", lineHeight: 1.6 }}>
+                    Use SK-AI for free. Sign in once and stay connected across sessions.
+                  </div>
+                  {puterConnected || settings.ai.usePuter ? (
+                    <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", padding: "0.6rem 0.75rem", background: "rgba(40, 167, 69, 0.12)", border: "1px solid rgba(40, 167, 69, 0.3)", borderRadius: "var(--radius)", marginBottom: "0.5rem" }}>
+                      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--green)" strokeWidth="2"><polyline points="20 6 9 17 4 12"/></svg>
+                      <span style={{ fontSize: 12, color: "var(--green)", fontWeight: 600 }}>Free SK-AI connected via Puter</span>
+                      <button className="btn btn-ghost" style={{ marginLeft: "auto", fontSize: 11, padding: "0.15rem 0.5rem" }}
+                        onClick={() => { setPuterConnected(false); updateAISettings({ usePuter: false }) }}>
+                        Disconnect
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      className="btn btn-primary"
+                      onClick={handleConnectPuter}
+                      disabled={puterConnecting}
+                      style={{ width: "100%", justifyContent: "center", marginBottom: "0.5rem" }}
+                    >
+                      {puterConnecting ? "Connecting..." : "Connect Free SK-AI (via Puter)"}
+                    </button>
+                  )}
+                  <div className="settings-hint">Puter gives free access to AI models — no credit card required. Your session stays active until you log out from puter.com.</div>
+                </div>
+
+                <div className="settings-section">
+                  <div className="settings-section-title">Your Own API Key</div>
+                  <div className="settings-row col">
+                    <label>API Key</label>
+                    <div style={{ display: "flex", gap: "0.4rem", alignItems: "center", width: "100%" }}>
+                      <input
+                        type={showKey ? "text" : "password"}
+                        value={keyInput}
+                        onChange={(e) => setKeyInput(e.target.value)}
+                        placeholder="Paste your API key here..."
+                        style={{ fontFamily: "var(--font-code)", fontSize: 11, flex: 1 }}
+                        onKeyDown={(e) => e.key === "Enter" && handleConnectKey()}
+                      />
+                      <button className="btn btn-ghost" style={{ padding: "0.25rem 0.5rem", flexShrink: 0 }} onClick={() => setShowKey(!showKey)}>
+                        {showKey ? "Hide" : "Show"}
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "0.75rem" }}>
+                    {keyStatus === "valid" && <span style={{ fontSize: 12, color: "var(--green)" }}>✓ Connected</span>}
+                    {keyStatus === "invalid" && <span style={{ fontSize: 12, color: "var(--red)" }}>✗ Invalid key</span>}
+                    {keyStatus === "expired" && <span style={{ fontSize: 12, color: "var(--orange)" }}>⚠ Credits used up</span>}
+                    {(keyStatus === "none" || keyStatus === "checking") && <span style={{ fontSize: 12, color: "var(--text-muted)" }}>{checking ? "Checking..." : "Not connected"}</span>}
+                    <button
+                      className="btn btn-primary"
+                      onClick={handleConnectKey}
+                      disabled={checking || !keyInput.trim()}
+                    >
+                      {checking ? "Checking..." : "Connect"}
+                    </button>
+                  </div>
+                </div>
+
+                <div className="settings-section">
+                  <div className="settings-section-title">Behavior</div>
+                  <div className="settings-row">
+                    <label>Auto-attach file context</label>
+                    <Toggle checked={settings.ai.autoContext} onChange={(v) => updateAISettings({ autoContext: v })} />
+                  </div>
+                  <div className="settings-hint">When on, the open file is sent with every message so SK-AI understands your code.</div>
+                </div>
+              </>
+            )}
+
+            {settingsTab === "github" && (
+              <>
+                <div className="settings-section">
+                  <div className="settings-section-title">Personal Access Token</div>
+                  <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: "0.75rem", lineHeight: 1.6 }}>
+                    Connect your GitHub account to push code, manage repositories, and open Codespaces. Token needs <strong style={{ color: "var(--orange)" }}>repo</strong> and <strong style={{ color: "var(--orange)" }}>codespace</strong> scopes.
+                  </div>
+                  {settings.github.username && (
+                    <div className="settings-key-status valid" style={{ marginBottom: "0.75rem" }}>
+                      ✓ Connected as @{settings.github.username}
+                    </div>
+                  )}
+                  <div className="settings-row col">
+                    <label>GitHub Token</label>
+                    <div style={{ display: "flex", gap: "0.4rem", alignItems: "center", width: "100%" }}>
+                      <input
+                        type={showToken ? "text" : "password"}
+                        value={tokenInput}
+                        onChange={(e) => setTokenInput(e.target.value)}
+                        placeholder="ghp_..."
+                        style={{ fontFamily: "var(--font-code)", fontSize: 11, flex: 1 }}
+                      />
+                      <button className="btn btn-ghost" style={{ padding: "0.25rem 0.5rem", flexShrink: 0 }} onClick={() => setShowToken(!showToken)}>
+                        {showToken ? "Hide" : "Show"}
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.75rem", flexWrap: "wrap" }}>
+                    <button className="btn btn-primary" onClick={handleValidateToken}>Connect GitHub</button>
+                    <a href="https://github.com/settings/tokens/new?scopes=codespace,repo&description=SK-Coder" target="_blank" rel="noopener noreferrer" className="btn btn-secondary">
+                      Create Token →
+                    </a>
+                  </div>
+                </div>
+              </>
+            )}
+
+            {settingsTab === "preview" && (
+              <>
+                <div className="settings-section">
+                  <div className="settings-section-title">Live Preview</div>
+                  <div className="settings-row">
+                    <label>Default Viewport</label>
+                    <select value={settings.preview.viewport} onChange={(e) => updatePreviewSettings({ viewport: e.target.value as "mobile" | "tablet" | "desktop" })} style={{ maxWidth: 130 }}>
+                      <option value="mobile">Mobile (390px)</option>
+                      <option value="tablet">Tablet (768px)</option>
+                      <option value="desktop">Desktop (Full)</option>
+                    </select>
+                  </div>
+                  <div className="settings-row">
+                    <label>Auto Refresh on Save</label>
+                    <Toggle checked={settings.preview.autoRefresh} onChange={(v) => updatePreviewSettings({ autoRefresh: v })} />
+                  </div>
+                </div>
+              </>
+            )}
+
+            {settingsTab === "about" && (
+              <>
+                <div className="settings-section">
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", marginBottom: "1rem" }}>
+                    <div style={{ width: 44, height: 44, borderRadius: 12, background: "linear-gradient(135deg,#007acc,#a371f7)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18, fontWeight: 700, color: "white", flexShrink: 0 }}>SK</div>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 15, color: "var(--text-primary)" }}>SK Coder IDE</div>
+                      <div style={{ fontSize: 11, color: "var(--text-muted)" }}>Version 3.0.0 — by Saqlain King</div>
+                    </div>
+                  </div>
+                  <p style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7, marginBottom: "0.5rem" }}>
+                    SK Coder is a professional mobile-first web IDE built for developers. Write, run, and deploy code in Python, JavaScript, Node.js, Java, and more — all from your browser with no setup required.
+                  </p>
+                </div>
+
+                <div className="settings-section">
+                  <div className="settings-section-title">How to Use</div>
+                  {[
+                    { icon: "📁", title: "Files", text: "Tap the Files icon in the bottom nav to open the file explorer. Create files, folders, and import your projects." },
+                    { icon: "✏️", title: "Editor", text: "Tap the code icon to open the editor. Full syntax highlighting with 50+ languages supported." },
+                    { icon: "▶️", title: "Run Code", text: "Press the green Run button to execute the active file. HTML files open in Preview, code runs in the terminal." },
+                    { icon: "💬", title: "SK-AI", text: "Tap the AI icon for the AI chat panel, or open the SK-AI tab in the Terminal for inline AI help." },
+                    { icon: "🖥️", title: "Terminal", text: "Use SK-Shell, Python 3, Node.js, Java, or SK-AI tabs. Type 'help' in SK-Shell to see all commands." },
+                    { icon: "🐙", title: "GitHub", text: "Connect your GitHub token to push projects, browse repos, and open Codespaces directly." },
+                  ].map((item) => (
+                    <div key={item.title} style={{ display: "flex", gap: "0.75rem", padding: "0.6rem 0", borderBottom: "1px solid var(--border-subtle)" }}>
+                      <span style={{ fontSize: 16, flexShrink: 0, lineHeight: 1 }}>{item.icon}</span>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 12, color: "var(--text-primary)", marginBottom: 2 }}>{item.title}</div>
+                        <div style={{ fontSize: 11, color: "var(--text-muted)", lineHeight: 1.6 }}>{item.text}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+
+                <div className="settings-section">
+                  <div className="settings-section-title">Privacy Policy</div>
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+                    <p style={{ marginBottom: "0.6rem" }}>SK Coder runs entirely in your browser. <strong style={{ color: "var(--text-primary)" }}>We do not collect, store, or transmit your code or files.</strong> Everything stays on your device.</p>
+                    <p style={{ marginBottom: "0.6rem" }}>Your API keys and GitHub tokens are stored only in your browser's local storage. They are never sent to our servers.</p>
+                    <p>When you use Puter AI or external AI providers, your messages are sent directly to those services under their respective privacy policies. SK Coder acts only as a client — it does not log or store your conversations.</p>
+                  </div>
+                </div>
+
+                <div className="settings-section">
+                  <div className="settings-section-title">Terms of Use</div>
+                  <div style={{ fontSize: 12, color: "var(--text-secondary)", lineHeight: 1.7 }}>
+                    <p style={{ marginBottom: "0.6rem" }}>SK Coder is free to use. You may use it for personal and commercial projects. Do not use it to generate harmful content or violate the terms of any third-party service you connect.</p>
+                    <p>The app is provided as-is. Saqlain King is not responsible for data loss, API costs, or issues arising from third-party services.</p>
+                  </div>
+                </div>
+
+                <div className="settings-section" style={{ borderBottom: "none" }}>
+                  <div className="settings-section-title">Contact & Links</div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+                    {[
+                      { label: "Built by Saqlain King", href: "#", icon: "👤" },
+                      { label: "Report a Bug", href: "mailto:support@skcoder.app", icon: "🐛" },
+                      { label: "Request a Feature", href: "mailto:support@skcoder.app", icon: "💡" },
+                    ].map((link) => (
+                      <a key={link.label} href={link.href} style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontSize: 12, color: "var(--accent)", textDecoration: "none", padding: "0.35rem 0" }}
+                        target={link.href.startsWith("http") ? "_blank" : undefined} rel="noopener noreferrer">
+                        <span>{link.icon}</span>
+                        <span>{link.label}</span>
+                      </a>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+
+          </div>
+        </div>
       </div>
-      {message && (
-        <div className={`flex items-center gap-1.5 text-[11px] ${status === "valid" ? "text-success" : status === "invalid" ? "text-destructive" : "text-muted-foreground"}`}>
-          {status === "valid" && <CheckCircle2 className="w-3.5 h-3.5" />}
-          {status === "invalid" && <XCircle className="w-3.5 h-3.5" />}
-          {message}
-          {credits !== null && status === "valid" && ` · $${credits.toFixed(2)} remaining`}
-        </div>
-      )}
-      {status === "valid" && (
-        <div>
-          <Label className="text-[11px] text-muted-foreground">Model</Label>
-          <input
-            type="text"
-            value={model}
-            onChange={(e) => handleModelChange(e.target.value)}
-            className="w-full bg-background text-xs text-foreground px-3 py-2 rounded-md mt-1 outline-none focus:ring-1 focus:ring-primary border border-border"
-            autoComplete="off"
-            spellCheck={false}
-          />
-        </div>
-      )}
-      <p className="text-[10px] text-muted-foreground leading-relaxed">
-        Works with any OpenAI-compatible API. Key is stored only on this device.
-      </p>
     </div>
-  );
+  )
 }
-
-function CloudShellSection() {
-  const [token, setToken] = useState<string | null>(getGithubToken());
-  const [user, setUser] = useState<{ login: string; avatar_url: string } | null>(null);
-
-  useEffect(() => {
-    if (!token) return;
-    fetchGithubUser(token).then(setUser);
-  }, [token]);
-
-  return (
-    <div className="p-4 space-y-4">
-      <div className="flex items-start gap-2">
-        <Cloud className="w-4 h-4 text-primary mt-0.5" />
-        <div>
-          <p className="text-sm font-semibold text-foreground">GitHub Codespaces</p>
-          <p className="text-[11px] text-muted-foreground mt-1">
-            Real Linux VM in your browser. Run npm, node, python, gcc, git — anything. Each user pays $0; Codespaces uses your free 60 hours/month under your own GitHub account. SK Coder never sees your code.
-          </p>
-        </div>
-      </div>
-      {token ? (
-        <div className="bg-success/10 border border-success/30 rounded-lg p-3 space-y-2">
-          <p className="text-xs text-success flex items-center gap-1.5">
-            <CheckCircle2 className="w-4 h-4" /> Signed in {user ? `as @${user.login}` : ""}
-          </p>
-          <p className="text-[11px] text-muted-foreground">Open the Terminal panel and switch to the Cloud Shell tab to attach to a codespace.</p>
-          <button
-            onClick={() => { clearGithubToken(); setToken(null); setUser(null); }}
-            className="px-3 py-1.5 rounded bg-secondary text-xs hover:bg-secondary/80"
-          >Sign out</button>
-        </div>
-      ) : (
-        <div className="bg-info/10 border border-info/30 rounded-lg p-3 space-y-2">
-          <p className="text-xs text-foreground">Not signed in.</p>
-          <p className="text-[11px] text-muted-foreground">Open the Terminal → Cloud Shell tab to sign in with your GitHub account using device code flow.</p>
-        </div>
-      )}
-      <div className="bg-secondary/30 rounded-lg p-3">
-        <p className="text-[11px] text-muted-foreground leading-relaxed">
-          Don't have a codespace? Create one free at{" "}
-          <a href="https://github.com/codespaces/new" target="_blank" rel="noopener noreferrer" className="text-primary underline">github.com/codespaces/new</a>.
-        </p>
-      </div>
-    </div>
-  );
-}
-
-function NotificationsSection() {
-  const [enabled, setEnabled] = useState(notificationsEnabled());
-
-  const toggle = async (v: boolean) => {
-    setEnabled(v);
-    setNotificationsEnabled(v);
-    if (v) await requestWebPermission();
-  };
-
-  return (
-    <div className="p-4 space-y-4">
-      <div className="flex items-start gap-2">
-        <Bell className="w-4 h-4 text-primary mt-0.5" />
-        <div>
-          <p className="text-sm font-semibold text-foreground">Background alerts</p>
-          <p className="text-[11px] text-muted-foreground mt-1">
-            Get notified when long builds, dev servers, or AI responses finish — even when SK Coder is in the background.
-          </p>
-        </div>
-      </div>
-      <div className="flex items-center justify-between">
-        <Label className="text-xs text-muted-foreground">Enable notifications</Label>
-        <Switch checked={enabled} onCheckedChange={toggle} />
-      </div>
-      <div className="bg-secondary/30 rounded-lg p-3">
-        <p className="text-[11px] text-muted-foreground">
-          On Android, allow notification permission when prompted. Notifications fire only when the app is in the background — they will not interrupt active coding.
-        </p>
-      </div>
-    </div>
-  );
-}
-

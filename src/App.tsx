@@ -1,32 +1,28 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes } from "react-router-dom";
-import { Toaster as Sonner } from "@/components/ui/sonner";
-import { Toaster } from "@/components/ui/toaster";
-import { TooltipProvider } from "@/components/ui/tooltip";
-import Index from "./pages/Index.tsx";
-import Privacy from "./pages/Privacy.tsx";
-import Terms from "./pages/Terms.tsx";
-import Guide from "./pages/Guide.tsx";
-import NotFound from "./pages/NotFound.tsx";
+import { Switch, Route, Router as WouterRouter } from "wouter"
+import IndexPage from "@/pages/Index"
+import PrivacyPage from "@/pages/Privacy"
+import TermsPage from "@/pages/Terms"
+import GuidePage from "@/pages/Guide"
+import NotFound from "@/pages/not-found"
 
-const queryClient = new QueryClient();
+function Router() {
+  return (
+    <Switch>
+      <Route path="/" component={IndexPage} />
+      <Route path="/privacy" component={PrivacyPage} />
+      <Route path="/terms" component={TermsPage} />
+      <Route path="/guide" component={GuidePage} />
+      <Route component={NotFound} />
+    </Switch>
+  )
+}
 
-const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <TooltipProvider>
-      <Toaster />
-      <Sonner />
-      <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Index />} />
-          <Route path="/privacy" element={<Privacy />} />
-          <Route path="/terms" element={<Terms />} />
-          <Route path="/guide" element={<Guide />} />
-          <Route path="*" element={<NotFound />} />
-        </Routes>
-      </BrowserRouter>
-    </TooltipProvider>
-  </QueryClientProvider>
-);
+function App() {
+  return (
+    <WouterRouter base={import.meta.env.BASE_URL.replace(/\/$/, "")}>
+      <Router />
+    </WouterRouter>
+  )
+}
 
-export default App;
+export default App

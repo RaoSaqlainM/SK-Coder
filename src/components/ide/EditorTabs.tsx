@@ -1,46 +1,91 @@
-import { X } from "lucide-react";
-import { useIDEStore } from "@/store/ideStore";
-import { cn } from "@/lib/utils";
-import { useCallback } from "react";
+import { useIDEStore } from "@/store/ideStore"
+import { formatCode, isSupportedLanguage } from "@/lib/formatter"
+import { toast } from "sonner"
+
+function getFileIcon(language: string): string {
+  const icons: Record<string, string> = {
+    html: "🌐", css: "🎨", javascript: "🟨", typescript: "🔷",
+    python: "🐍", cpp: "⚙️", c: "⚙️", java: "☕", kotlin: "🦾",
+    rust: "🦀", go: "🐹", ruby: "💎", php: "🐘", swift: "🍎",
+    markdown: "📝", json: "📋", yaml: "📄", xml: "📰", shell: "💻",
+    sql: "🗄️", dart: "🎯", r: "📊", plaintext: "📄",
+  }
+  return icons[language] || "📄"
+}
 
 export default function EditorTabs() {
-  const { openTabs, activeTabId, setActiveTab, closeTab, closeAllTabs, closeOtherTabs, setContextMenu } = useIDEStore();
+  const {
+    openTabs, activeTabId, setActiveTab, closeTab,
+    getActiveFile, getFileContent, updateFileContent, markTabModified, settings,
+  } = useIDEStore()
 
-  const handleClose = useCallback((e: React.MouseEvent, tabId: string) => {
-    e.stopPropagation();
-    closeTab(tabId);
-  }, [closeTab]);
+  const activeFile = getActiveFile()
+  const canFormat = activeFile && isSupportedLanguage(activeFile.language || "")
 
-  if (openTabs.length === 0) return null;
+  async function handleFormat() {
+    if (!activeFile) return
+    const lang = activeFile.language || "plaintext"
+    if (!isSupportedLanguage(lang)) { toast.info(`No formatter for ${lang}`); return }
+    const code = getFileContent(activeFile.path) || activeFile.content || ""
+    toast.loading("Formatting…", { id: "fmt" })
+    const { formatted, error } = await formatCode(code, lang, settings.editor.tabSize)
+    if (error) { toast.error(error, { id: "fmt" }); return }
+    if (formatted === code) { toast.success("Already formatted", { id: "fmt" }); return }
+    updateFileContent(activeFile.path, formatted)
+    if (activeTabId) markTabModified(activeTabId, true)
+    toast.success("Formatted", { id: "fmt" })
+  }
+
+  if (openTabs.length === 0) {
+    return (
+      <div className="ide-tabs-bar" style={{ alignItems: "center", padding: "0 1rem" }}>
+        <span style={{ fontSize: 12, color: "var(--text-muted)" }}>
+          Open a file from the explorer →
+        </span>
+      </div>
+    )
+  }
 
   return (
-    <div className="flex items-center bg-[hsl(var(--tab-inactive))] overflow-x-auto no-scrollbar border-b border-border h-9 shrink-0">
-      {openTabs.map((tab) => (
-        <div
-          key={tab.id}
-          className={cn(
-            "flex items-center gap-1.5 px-3 h-full text-xs cursor-pointer border-r border-border/50 transition-colors group min-w-0 relative",
-            tab.id === activeTabId
-              ? "bg-[hsl(var(--tab-active))] text-foreground"
-              : "text-muted-foreground hover:text-foreground hover:bg-secondary/30"
-          )}
-          onClick={() => setActiveTab(tab.id)}
-        >
-          {tab.id === activeTabId && (
-            <div className="absolute top-0 left-0 right-0 h-[2px] bg-primary" />
-          )}
-          {tab.isDirty && (
-            <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />
-          )}
-          <span className="truncate max-w-[120px]">{tab.name}</span>
-          <button
-            className="ml-0.5 p-0.5 rounded hover:bg-secondary/80 opacity-0 group-hover:opacity-100 transition-opacity shrink-0"
-            onClick={(e) => handleClose(e, tab.id)}
+    <div className="ide-tabs-bar">
+      <div style={{ display: "flex", flex: 1, minWidth: 0, overflowX: "auto", overflowY: "hidden" }}>
+        {openTabs.map((tab) => (
+          <div
+            key={tab.id}
+            className={`ide-tab ${tab.id === activeTabId ? "active" : ""} ${tab.modified ? "modified" : ""}`}
+            onClick={() => setActiveTab(tab.id)}
+            title={tab.path}
           >
-            <X className="w-3 h-3" />
-          </button>
-        </div>
-      ))}
+            <span style={{ fontSize: 11 }}>{getFileIcon(tab.language)}</span>
+            <span>{tab.name}</span>
+            {tab.modified && (
+              <span style={{ width: 6, height: 6, borderRadius: "50%", background: "var(--accent)", display: "inline-block", marginLeft: 2 }} />
+            )}
+            <button
+              className="ide-tab-close"
+              onClick={(e) => { e.stopPropagation(); closeTab(tab.id) }}
+              title="Close tab"
+            >
+              ✕
+            </button>
+          </div>
+        ))}
+      </div>
+
+      {canFormat && (
+        <button
+          className="btn-icon"
+          onClick={handleFormat}
+          title="Format code (Shift+Alt+F)"
+          style={{ flexShrink: 0, marginRight: 4 }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+            <polyline points="4 7 4 4 20 4 20 7"/>
+            <line x1="9" y1="20" x2="15" y2="20"/>
+            <line x1="12" y1="4" x2="12" y2="20"/>
+          </svg>
+        </button>
+      )}
     </div>
-  );
+  )
 }

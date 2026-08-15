@@ -1,215 +1,325 @@
-import { useState, useCallback } from "react";
-import {
-  ChevronRight, ChevronDown, File, Folder, FolderOpen,
-  FileCode, FileText, Image, Database, Braces, Globe, Palette,
-  Search, FilePlus
-} from "lucide-react";
-import { useIDEStore } from "@/store/ideStore";
-import type { FileNode } from "@/types/ide";
-import { cn } from "@/lib/utils";
-import NewFileDialog from "./NewFileDialog";
+import { useRef, useState, useMemo } from "react"
+import { useIDEStore } from "@/store/ideStore"
+import { importFromZip, importFromFiles } from "@/lib/importProject"
+import type { FileNode } from "@/types/ide"
+import { toast } from "sonner"
 
-function getFileIcon(name: string) {
-  const ext = name.split(".").pop()?.toLowerCase() || "";
-  const map: Record<string, React.ReactNode> = {
-    html: <Globe className="w-4 h-4 text-orange-400" />,
-    css: <Palette className="w-4 h-4 text-blue-400" />,
-    scss: <Palette className="w-4 h-4 text-pink-400" />,
-    sass: <Palette className="w-4 h-4 text-pink-400" />,
-    less: <Palette className="w-4 h-4 text-blue-300" />,
-    js: <FileCode className="w-4 h-4 text-yellow-400" />,
-    jsx: <FileCode className="w-4 h-4 text-yellow-400" />,
-    ts: <FileCode className="w-4 h-4 text-blue-500" />,
-    tsx: <FileCode className="w-4 h-4 text-blue-500" />,
-    json: <Braces className="w-4 h-4 text-yellow-300" />,
-    md: <FileText className="w-4 h-4 text-foreground" />,
-    py: <FileCode className="w-4 h-4 text-green-400" />,
-    sql: <Database className="w-4 h-4 text-blue-300" />,
-    png: <Image className="w-4 h-4 text-green-300" />,
-    jpg: <Image className="w-4 h-4 text-green-300" />,
-    jpeg: <Image className="w-4 h-4 text-green-300" />,
-    svg: <Image className="w-4 h-4 text-orange-300" />,
-    gif: <Image className="w-4 h-4 text-purple-300" />,
-    cpp: <FileCode className="w-4 h-4 text-blue-600" />,
-    c: <FileCode className="w-4 h-4 text-blue-600" />,
-    cs: <FileCode className="w-4 h-4 text-purple-500" />,
-    java: <FileCode className="w-4 h-4 text-red-400" />,
-    go: <FileCode className="w-4 h-4 text-cyan-400" />,
-    rs: <FileCode className="w-4 h-4 text-orange-500" />,
-    rb: <FileCode className="w-4 h-4 text-red-500" />,
-    php: <FileCode className="w-4 h-4 text-indigo-400" />,
-    swift: <FileCode className="w-4 h-4 text-orange-400" />,
-    kt: <FileCode className="w-4 h-4 text-purple-400" />,
-    dart: <FileCode className="w-4 h-4 text-cyan-500" />,
-    vue: <FileCode className="w-4 h-4 text-green-500" />,
-    svelte: <FileCode className="w-4 h-4 text-orange-600" />,
-    yaml: <FileText className="w-4 h-4 text-red-300" />,
-    yml: <FileText className="w-4 h-4 text-red-300" />,
-    xml: <FileCode className="w-4 h-4 text-orange-300" />,
-    sh: <FileCode className="w-4 h-4 text-green-300" />,
-    env: <FileText className="w-4 h-4 text-yellow-600" />,
-    toml: <FileText className="w-4 h-4 text-gray-400" />,
-  };
-  return map[ext] || <File className="w-4 h-4 text-muted-foreground" />;
+const EXT_COLORS: Record<string, string> = {
+  html: "#e34c26", htm: "#e34c26", css: "#264de4", scss: "#cc6699", sass: "#cc6699",
+  js: "#f7df1e", jsx: "#61dafb", ts: "#3178c6", tsx: "#3178c6",
+  py: "#3572a5", cpp: "#00599c", c: "#555555", java: "#b07219",
+  kt: "#7f52ff", rs: "#dea584", go: "#00add8", rb: "#cc342d",
+  php: "#4f5d95", swift: "#ffac45", dart: "#00b4ab",
+  md: "#083fa1", json: "#cbcb41", yaml: "#cb171e", yml: "#cb171e",
+  xml: "#e37933", sh: "#4eaa25", sql: "#e38c00",
+  vue: "#42b883", svelte: "#ff3e00",
 }
 
-function TreeItem({ node, depth = 0 }: { node: FileNode; depth?: number }) {
-  const { openFile, activeTabId, openTabs, setContextMenu, expandedFolders, toggleFolder } = useIDEStore();
-  const isActive = openTabs.find((t) => t.id === activeTabId)?.path === node.path;
-  const isExpanded = expandedFolders.has(node.path);
-
-  const handleClick = useCallback(() => {
-    if (node.type === "folder") {
-      toggleFolder(node.path);
-    } else {
-      openFile(node);
+function countByExt(nodes: FileNode[]): Record<string, number> {
+  const counts: Record<string, number> = {}
+  function walk(ns: FileNode[]) {
+    for (const n of ns) {
+      if (n.type === "file") {
+        const ext = n.name.split(".").pop()?.toLowerCase() || "other"
+        counts[ext] = (counts[ext] || 0) + 1
+      }
+      if (n.children) walk(n.children)
     }
-  }, [node, toggleFolder, openFile]);
+  }
+  walk(nodes)
+  return counts
+}
 
-  const longPressRef = useState<{ timer: ReturnType<typeof setTimeout> | null }>({ timer: null })[0];
+function LangStats({ nodes }: { nodes: FileNode[] }) {
+  const stats = useMemo(() => {
+    const counts = countByExt(nodes)
+    const total = Object.values(counts).reduce((a, b) => a + b, 0)
+    if (total === 0) return null
+    const sorted = Object.entries(counts).sort(([, a], [, b]) => b - a).slice(0, 7)
+    return { sorted, total }
+  }, [nodes])
 
-  const handleContextMenu = useCallback((e: React.MouseEvent | React.TouchEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    const clientX = "clientX" in e ? e.clientX : e.touches[0].clientX;
-    const clientY = "clientY" in e ? e.clientY : e.touches[0].clientY;
-    setContextMenu({ x: clientX, y: clientY, node });
-  }, [node, setContextMenu]);
-
-  const handleTouchStart = useCallback((e: React.TouchEvent) => {
-    const touch = e.touches[0];
-    longPressRef.timer = setTimeout(() => {
-      setContextMenu({ x: touch.clientX, y: touch.clientY, node });
-    }, 500);
-  }, [longPressRef, node, setContextMenu]);
-
-  const handleTouchEnd = useCallback(() => {
-    if (longPressRef.timer) clearTimeout(longPressRef.timer);
-    longPressRef.timer = null;
-  }, [longPressRef]);
+  if (!stats || stats.total === 0) return null
 
   return (
-    <div>
+    <div className="lang-stats">
+      <div className="lang-stats-bar">
+        {stats.sorted.map(([ext, count]) => (
+          <div
+            key={ext}
+            className="lang-stats-seg"
+            style={{ width: `${(count / stats.total) * 100}%`, background: EXT_COLORS[ext] || "#888" }}
+            title={`.${ext} — ${Math.round((count / stats.total) * 100)}%`}
+          />
+        ))}
+      </div>
+      <div className="lang-stats-list">
+        {stats.sorted.map(([ext, count]) => (
+          <span key={ext} className="lang-stat-item">
+            <span style={{ color: EXT_COLORS[ext] || "#888" }}>●</span>
+            <span>.{ext}</span>
+            <span style={{ color: "var(--text-muted)" }}>{Math.round((count / stats.total) * 100)}%</span>
+          </span>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function FileIcon({ node, expanded }: { node: FileNode; expanded?: boolean }) {
+  if (node.type === "folder") {
+    return (
+      <svg width="14" height="14" viewBox="0 0 24 24" fill={expanded ? "var(--accent)" : "#e8a853"} stroke="none">
+        <path d="M10 4H4c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V8c0-1.1-.9-2-2-2h-8l-2-2z"/>
+      </svg>
+    )
+  }
+  const ext = node.name.split(".").pop()?.toLowerCase() || ""
+  const colors: Record<string, string> = {
+    ...EXT_COLORS,
+    h: "#555555", gitignore: "var(--text-muted)", env: "var(--orange)", toml: "var(--orange)",
+    png: "#3d90ff", jpg: "#3d90ff", jpeg: "#3d90ff", gif: "#3d90ff", svg: "#ffb13b",
+    txt: "var(--text-muted)", astro: "#ff5a03",
+  }
+  const color = colors[ext] || "var(--text-muted)"
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill={color} stroke="none">
+      <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" opacity="0.9"/>
+      <polyline points="14 2 14 8 20 8" fill="rgba(0,0,0,0.2)" stroke="none"/>
+    </svg>
+  )
+}
+
+type FileNodeProps = { node: FileNode; depth: number; activePath: string | undefined }
+
+function FileNodeItem({ node, depth, activePath }: FileNodeProps) {
+  const {
+    openTab, expandedFolders, toggleFolder, setContextMenu,
+    renameNodeId, setRenameNodeId, renameNode, moveNode, setDragOver, dragOverId,
+    setActivePanel, setSidebarOpen,
+  } = useIDEStore()
+  const [renameValue, setRenameValue] = useState(node.name)
+  const expanded = expandedFolders.has(node.path)
+
+  function handleClick() {
+    if (node.type === "folder") {
+      toggleFolder(node.path)
+    } else {
+      openTab(node)
+      if (window.innerWidth < 768) {
+        setSidebarOpen(false)
+        setActivePanel("editor")
+      }
+    }
+  }
+
+  function handleContextMenu(e: React.MouseEvent) {
+    e.preventDefault()
+    e.stopPropagation()
+    setContextMenu({ x: e.clientX, y: e.clientY, node, isFolder: node.type === "folder" })
+  }
+
+  function handleRenameKeyDown(e: React.KeyboardEvent) {
+    if (e.key === "Enter") {
+      if (renameValue.trim() && renameValue !== node.name) renameNode(node.path, renameValue.trim())
+      else setRenameNodeId(null)
+    }
+    if (e.key === "Escape") { setRenameNodeId(null); setRenameValue(node.name) }
+  }
+
+  function handleDragStart(e: React.DragEvent) {
+    e.dataTransfer.setData("text/plain", node.path)
+    e.dataTransfer.effectAllowed = "move"
+  }
+
+  function handleDragOver(e: React.DragEvent) {
+    if (node.type !== "folder") return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = "move"
+    setDragOver(node.id)
+  }
+
+  function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    setDragOver(null)
+    if (node.type !== "folder") return
+    const fromPath = e.dataTransfer.getData("text/plain")
+    if (!fromPath || fromPath === node.path || node.path.startsWith(fromPath + "/")) return
+    moveNode(fromPath, node.path)
+    toast.success("Moved")
+  }
+
+  const isActive = activePath === node.path
+  const isRenaming = renameNodeId === node.id
+  const isDragOver = dragOverId === node.id
+
+  return (
+    <>
       <div
-        className={cn(
-          "flex items-center gap-1.5 py-1 px-2 cursor-pointer text-[13px] transition-colors select-none",
-          isActive
-            ? "bg-accent/30 text-foreground"
-            : "text-sidebar-foreground hover:bg-secondary/40"
-        )}
-        style={{ paddingLeft: `${depth * 14 + 8}px` }}
+        className={`file-node ${isActive ? "active" : ""} ${isDragOver ? "drag-over" : ""}`}
+        style={{ paddingLeft: `${0.4 + depth * 1}rem` }}
         onClick={handleClick}
         onContextMenu={handleContextMenu}
-        onTouchStart={handleTouchStart}
-        onTouchEnd={handleTouchEnd}
-        onTouchMove={handleTouchEnd}
+        draggable
+        onDragStart={handleDragStart}
+        onDragOver={handleDragOver}
+        onDragLeave={() => setDragOver(null)}
+        onDrop={handleDrop}
+        title={node.path}
       >
-        {node.type === "folder" ? (
-          <>
-            {isExpanded ? (
-              <ChevronDown className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-            ) : (
-              <ChevronRight className="w-3.5 h-3.5 text-muted-foreground shrink-0" />
-            )}
-            {isExpanded ? (
-              <FolderOpen className="w-4 h-4 text-primary shrink-0" />
-            ) : (
-              <Folder className="w-4 h-4 text-primary/80 shrink-0" />
-            )}
-          </>
-        ) : (
-          <>
-            <span className="w-3.5 shrink-0" />
-            {getFileIcon(node.name)}
-          </>
+        {node.type === "folder" && (
+          <svg
+            className={`file-node-chevron ${expanded ? "open" : ""}`}
+            width="9" height="9" viewBox="0 0 24 24"
+            fill="none" stroke="currentColor" strokeWidth="2.5"
+          >
+            <polyline points="9 18 15 12 9 6"/>
+          </svg>
         )}
-        <span className="truncate">{node.name}</span>
+        <span className="file-node-icon"><FileIcon node={node} expanded={expanded} /></span>
+        {isRenaming ? (
+          <div className="file-node-rename" onClick={(e) => e.stopPropagation()}>
+            <input
+              value={renameValue}
+              onChange={(e) => setRenameValue(e.target.value)}
+              onKeyDown={handleRenameKeyDown}
+              onBlur={() => setRenameNodeId(null)}
+              autoFocus
+            />
+          </div>
+        ) : (
+          <span className="file-node-name">{node.name}</span>
+        )}
       </div>
-      {node.type === "folder" && isExpanded && node.children && (
-        <div>
-          {[...node.children]
-            .sort((a, b) => {
-              if (a.type !== b.type) return a.type === "folder" ? -1 : 1;
-              return a.name.localeCompare(b.name);
-            })
-            .map((child) => (
-              <TreeItem key={child.id} node={child} depth={depth + 1} />
-            ))}
-        </div>
+      {node.type === "folder" && expanded && node.children && (
+        <>
+          {node.children.map((child) => (
+            <FileNodeItem key={child.id} node={child} depth={depth + 1} activePath={activePath} />
+          ))}
+        </>
       )}
-    </div>
-  );
+    </>
+  )
 }
 
 export default function FileExplorer() {
-  const { fileTree, searchQuery, setSearchQuery } = useIDEStore();
-  const [showNewFile, setShowNewFile] = useState(false);
-  const [showSearch, setShowSearch] = useState(false);
+  const { fileTree, setNewItem, importFiles, getActiveFile } = useIDEStore()
+  const importInputRef = useRef<HTMLInputElement>(null)
+  const [dragActive, setDragActive] = useState(false)
+  const [search, setSearch] = useState("")
+  const activeFile = getActiveFile()
 
-  const filterTree = useCallback((nodes: FileNode[], query: string): FileNode[] => {
-    if (!query) return nodes;
-    return nodes
-      .map((node) => {
-        if (node.type === "folder" && node.children) {
-          const filtered = filterTree(node.children, query);
-          if (filtered.length > 0) return { ...node, children: filtered };
-        }
-        if (node.name.toLowerCase().includes(query.toLowerCase())) return node;
-        return null;
-      })
-      .filter(Boolean) as FileNode[];
-  }, []);
+  async function handleSmartImport(files: FileList) {
+    if (!files.length) return
+    const zipFile = Array.from(files).find((f) => f.name.toLowerCase().endsWith(".zip"))
+    try {
+      if (zipFile) {
+        const nodes = await importFromZip(zipFile)
+        importFiles(nodes)
+        toast.success(`Imported ${zipFile.name}`)
+      } else {
+        const nodes = await importFromFiles(files)
+        importFiles(nodes)
+        toast.success(`Imported ${files.length} file(s)`)
+      }
+    } catch {
+      toast.error("Import failed")
+    }
+  }
 
-  const displayTree = searchQuery ? filterTree(fileTree, searchQuery) : fileTree;
+  async function handleDrop(e: React.DragEvent) {
+    e.preventDefault()
+    setDragActive(false)
+    const files = e.dataTransfer.files
+    if (!files.length) return
+    await handleSmartImport(files)
+  }
+
+  function filterTree(nodes: FileNode[], query: string): FileNode[] {
+    if (!query) return nodes
+    const q = query.toLowerCase()
+    const results: FileNode[] = []
+    function walk(ns: FileNode[]) {
+      for (const n of ns) {
+        if (n.type === "file" && n.name.toLowerCase().includes(q)) results.push(n)
+        if (n.children) walk(n.children)
+      }
+    }
+    walk(nodes)
+    return results
+  }
+
+  const displayTree = search ? filterTree(fileTree, search) : fileTree
 
   return (
-    <div className="h-full flex flex-col bg-sidebar">
-      <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border shrink-0">
-        <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">Explorer</span>
-        <div className="flex items-center gap-0.5">
-          <button
-            onClick={() => setShowSearch(!showSearch)}
-            className="p-1 rounded hover:bg-sidebar-accent transition-colors"
-          >
-            <Search className="w-3.5 h-3.5 text-muted-foreground" />
+    <div
+      className="file-explorer"
+      onDragOver={(e) => { e.preventDefault(); setDragActive(true) }}
+      onDragLeave={() => setDragActive(false)}
+      onDrop={handleDrop}
+    >
+      <div className="file-explorer-header">
+        <span>Explorer</span>
+        <div className="file-explorer-actions">
+          <button className="file-explorer-action-btn" onClick={() => setNewItem(null, "file")} title="New File">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/>
+              <polyline points="14 2 14 8 20 8"/>
+              <line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>
+            </svg>
           </button>
-          <button
-            onClick={() => setShowNewFile(true)}
-            className="p-1 rounded hover:bg-sidebar-accent transition-colors"
-          >
-            <FilePlus className="w-3.5 h-3.5 text-muted-foreground" />
+          <button className="file-explorer-action-btn" onClick={() => setNewItem(null, "folder")} title="New Folder">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+              <line x1="12" y1="11" x2="12" y2="17"/><line x1="9" y1="14" x2="15" y2="14"/>
+            </svg>
+          </button>
+          <button className="file-explorer-action-btn" onClick={() => importInputRef.current?.click()} title="Import files or ZIP">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>
+            </svg>
           </button>
         </div>
       </div>
-      {showSearch && (
-        <div className="px-2 py-1.5 border-b border-sidebar-border">
-          <input
-            type="text"
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
-            placeholder="Search files..."
-            className="w-full bg-sidebar-accent text-xs text-foreground px-2.5 py-1.5 rounded outline-none placeholder:text-muted-foreground/50 focus:ring-1 focus:ring-primary"
-            autoFocus
-          />
-        </div>
-      )}
-      <div className="flex-1 overflow-y-auto scrollbar-thin py-0.5">
-        {displayTree.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-muted-foreground text-xs px-4 text-center gap-3 py-8">
-            <Folder className="w-10 h-10 opacity-30" />
-            <p className="font-medium">No files yet</p>
-            <p className="text-[11px] opacity-70">Open a project or create a new file</p>
+
+      <div className="file-explorer-search">
+        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search files..." style={{ width: "100%" }} />
+      </div>
+
+      <div className="file-tree">
+        {dragActive && <div className="import-drop-zone drag-active" style={{ margin: "0.5rem" }}>Drop ZIP or files here</div>}
+
+        {displayTree.length === 0 && !dragActive && (
+          <div className="panel-placeholder" style={{ padding: "1.5rem" }}>
+            <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" opacity="0.3">
+              <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>
+            </svg>
+            <p>{search ? "No files match" : "Drop files here or click +"}</p>
+            {!search && (
+              <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.5rem", flexWrap: "wrap", justifyContent: "center" }}>
+                <button className="btn btn-secondary" onClick={() => setNewItem(null, "file")}>+ New File</button>
+                <button className="btn btn-ghost" onClick={() => importInputRef.current?.click()}>Import</button>
+              </div>
+            )}
           </div>
-        ) : (
-          displayTree
-            .sort((a, b) => {
-              if (a.type !== b.type) return a.type === "folder" ? -1 : 1;
-              return a.name.localeCompare(b.name);
-            })
-            .map((node) => <TreeItem key={node.id} node={node} depth={0} />)
         )}
+
+        {search
+          ? displayTree.map((node) => <FileNodeItem key={node.id} node={node} depth={0} activePath={activeFile?.path} />)
+          : fileTree.map((node) => <FileNodeItem key={node.id} node={node} depth={0} activePath={activeFile?.path} />)
+        }
       </div>
-      <NewFileDialog open={showNewFile} onClose={() => setShowNewFile(false)} parentPath="" />
+
+      <LangStats nodes={fileTree} />
+
+      <input
+        ref={importInputRef}
+        type="file"
+        multiple
+        style={{ display: "none" }}
+        onChange={async (e) => { if (e.target.files) await handleSmartImport(e.target.files); e.target.value = "" }}
+      />
     </div>
-  );
+  )
 }

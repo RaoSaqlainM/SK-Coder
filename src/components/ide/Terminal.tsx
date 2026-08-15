@@ -1,395 +1,932 @@
-import { useEffect, useRef, useState, useCallback } from "react";
-import { useIDEStore } from "@/store/ideStore";
-import { Trash2, Copy, Check, Cloud, RotateCcw, Smartphone } from "lucide-react";
-import type { TerminalType, FileNode } from "@/types/ide";
-import { runPython } from "@/lib/pyodideRunner";
-import { runJS } from "@/lib/jsRunner";
-import { runViaPiston, langForExt, type CloudResult } from "@/lib/pistonRunner";
-import { buildHtmlPreview, buildReactPreview, findPreviewEntry, htmlToDataUrl } from "@/lib/previewBuilder";
-import { runSandboxCommand, runWorkspaceProject } from "@/lib/workspaceSandbox";
-import { isAndroid, isTermuxInstalled, runTermuxCommand } from "@/lib/termuxBridge";
-import CloudShell from "@/components/ide/CloudShell";
-import TermuxSetup from "@/components/ide/TermuxSetup";
+import { useState, useRef, useEffect, useCallback } from "react"
+import { useIDEStore } from "@/store/ideStore"
+import { runWithPiston } from "@/lib/pistonRunner"
+import { runNodeSimulated } from "@/lib/jsRunner"
+import { sendAIMessage, buildSystemPrompt } from "@/lib/aiClient"
+import { runOnBackend, isBackendAvailable } from "@/lib/backendRunner"
+import { parseErrors } from "@/components/ide/ErrorPanel"
+import type { FileNode, AIChatMessage } from "@/types/ide"
 
-type TabKind = "local" | "cloud" | "termux";
-
-interface TerminalDef {
-  id: TerminalType;
-  label: string;
-  prompt: string;
-  cloudExt?: string;
-  hint?: string;
-}
-
-const TERMINALS: TerminalDef[] = [
-  { id: "shell",      label: "Shell",    prompt: "$" },
-  { id: "python",     label: "Python",   prompt: ">>>" },
-  { id: "javascript", label: "JS",       prompt: ">" },
-  { id: "cpp",        label: "C/C++",    prompt: "g++>",   cloudExt: "cpp",  hint: "Type code or open a .cpp file. Cloud compiler executes it." },
-  { id: "node",       label: "Node",     prompt: "node>",                    hint: "Single-file JS runs locally. For npm/dev servers use Cloud Shell or Termux." },
-  { id: "bash",       label: "Bash",     prompt: "bash$",  cloudExt: "bash", hint: "Single bash script via cloud. Interactive shell needs Cloud Shell or Termux." },
-  { id: "kali",       label: "Kali",     prompt: "kali#",                    hint: "Kali tools require a real Linux runtime. Use Cloud Shell or Termux." },
-  { id: "gitbash",    label: "Git Bash", prompt: "git$",   cloudExt: "bash", hint: "Bash commands route through the cloud bash runner." },
-];
-
-function findFileByName(nodes: FileNode[], name: string): FileNode | null {
-  for (const n of nodes) {
-    if (n.type === "file" && (n.name === name || n.path === name)) return n;
-    if (n.children) {
-      const f = findFileByName(n.children, name);
-      if (f) return f;
-    }
-  }
-  return null;
-}
-
-function listAtRoot(nodes: FileNode[]) {
-  return nodes.map((f) => `${f.type === "folder" ? "📁" : "📄"} ${f.name}`).join("\n") || "(empty workspace)";
-}
-
-function extOf(name: string) {
-  return name.split(".").pop()?.toLowerCase() || "";
-}
-
-function isPackageCommand(command: string) {
-  return ["npm", "pnpm", "yarn", "bun", "vite", "next", "react-scripts"].includes(command);
-}
-
-function fileFromCommandParts(nodes: FileNode[], parts: string[]) {
-  for (const part of parts) {
-    const cleaned = part.replace(/^['"]|['"]$/g, "");
-    const found = findFileByName(nodes, cleaned);
-    if (found) return found;
-  }
-  return null;
-}
-
-function showCloudResult(result: CloudResult, addTerminalLine: ReturnType<typeof useIDEStore.getState>["addTerminalLine"]) {
-  if (result.message) addTerminalLine({ text: result.message, type: result.offline ? "info" : "error" });
-  if (result.compileStderr) result.compileStderr.split("\n").forEach((l) => l && addTerminalLine({ text: l, type: "error" }));
-  if (result.diagnostics?.length) {
-    addTerminalLine({ text: "Mapped source lines:", type: "info" });
-    result.diagnostics.forEach((d) => addTerminalLine({ text: `${d.filePath}:${d.lineNumber}${d.columnNumber ? `:${d.columnNumber}` : ""}: ${d.message}${d.sourceLine ? ` → ${d.sourceLine}` : ""}`, type: "error", filePath: d.filePath, lineNumber: d.lineNumber, columnNumber: d.columnNumber }));
-  }
-  if (result.stdout) result.stdout.split("\n").forEach((l) => addTerminalLine({ text: l, type: "output" }));
-  if (result.stderr) result.stderr.split("\n").forEach((l) => l && addTerminalLine({ text: l, type: "error" }));
-  if (!result.stdout && !result.stderr && !result.compileStderr && !result.message) addTerminalLine({ text: "(no output)", type: "output" });
-  addTerminalLine({ text: `exit ${result.code ?? (result.ok ? 0 : 1)}`, type: result.ok ? "success" : "error" });
-}
-
-export default function Terminal() {
-  const { terminalLines, addTerminalLine, clearTerminal, terminalType, setTerminalType, setPreviewUrl, setActivePanel, openFile, setEditorTarget } = useIDEStore();
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const [history, setHistory] = useState<string[]>([]);
-  const [hIdx, setHIdx] = useState(-1);
-  const [busy, setBusy] = useState(false);
-  const [copiedCmd, setCopiedCmd] = useState(false);
-  const [lastRun, setLastRun] = useState<{ ext: string; source: string; label: string; filePath?: string } | null>(null);
-  const [tabKind, setTabKind] = useState<TabKind>("local");
-  const [termuxOk, setTermuxOk] = useState(false);
-
-  useEffect(() => { isTermuxInstalled().then(setTermuxOk); }, [tabKind]);
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [terminalLines]);
-
-  const current = TERMINALS.find((t) => t.id === terminalType) || TERMINALS[0];
-
-  const executeFile = useCallback(async (target: FileNode) => {
-    const ext = extOf(target.name);
-    const source = target.content || "";
-    setLastRun({ ext, source, label: target.path, filePath: target.path });
-    if (ext === "html") {
-      setPreviewUrl(htmlToDataUrl(buildHtmlPreview(target, useIDEStore.getState().fileTree)));
-      setActivePanel("preview");
-      addTerminalLine({ text: `Preview ready: ${target.path}`, type: "success" });
-      return;
-    }
-    if (["jsx", "tsx"].includes(ext)) {
-      setPreviewUrl(htmlToDataUrl(buildReactPreview(target, useIDEStore.getState().fileTree)));
-      setActivePanel("preview");
-      addTerminalLine({ text: `React preview ready: ${target.path}`, type: "success" });
-      return;
-    }
-    if (ext === "py") {
-      await runPython(source, (s) => addTerminalLine({ text: s, type: "output" }));
-      addTerminalLine({ text: "Python completed", type: "success" });
-      return;
-    }
-    if (["js", "mjs", "cjs"].includes(ext)) {
-      await runJS(source, (s, t) => addTerminalLine({ text: s, type: t === "error" ? "error" : "output" }));
-      addTerminalLine({ text: "JavaScript completed", type: "success" });
-      return;
-    }
-    if (langForExt(ext)) {
-      addTerminalLine({ text: `Queued ${target.name} for cloud compile...`, type: "info" });
-      showCloudResult(await runViaPiston(ext, source, "", target.path), addTerminalLine);
-      return;
-    }
-    addTerminalLine({ text: `No runner for .${ext}.`, type: "error" });
-  }, [addTerminalLine, setActivePanel, setPreviewUrl]);
-
-  const retryLast = useCallback(async () => {
-    if (!lastRun || busy) return;
-    setBusy(true);
-    addTerminalLine({ text: `Retry ${lastRun.label}`, type: "input" });
-    try {
-        if (langForExt(lastRun.ext)) showCloudResult(await runViaPiston(lastRun.ext, lastRun.source, "", lastRun.filePath || lastRun.label), addTerminalLine);
-      else addTerminalLine({ text: "Retry is available for the last cloud compile job.", type: "info" });
-    } finally {
-      setBusy(false);
-    }
-  }, [addTerminalLine, busy, lastRun]);
-
-  const handleCommand = useCallback(async (cmd: string) => {
-    if (busy) return;
-    setHistory((h) => [...h, cmd]);
-    setHIdx(-1);
-    addTerminalLine({ text: `${current.prompt} ${cmd}`, type: "input" });
-    const parts = cmd.trim().split(/\s+/);
-    const command = parts[0]?.toLowerCase() || "";
-
-    if (command === "clear" || command === "cls") { clearTerminal(); return; }
-    if (command === "help") {
-      addTerminalLine({ text: "Commands: clear, help, ls, pwd, cat <file>, echo, date, whoami, tree, version, preview, run <file>, termux <cmd>", type: "info" });
-      addTerminalLine({ text: "Local: HTML/CSS/JS/Python. Cloud: C/C++/Java/Go/Rust/etc. Cloud Shell tab: real Linux. Termux tab: on-device Linux (Android).", type: "info" });
-      return;
-    }
-    if (command === "termux") {
-      if (!isAndroid()) { addTerminalLine({ text: "termux: only available in the Android app", type: "error" }); return; }
-      if (!termuxOk) { addTerminalLine({ text: "termux: not installed. Open the Termux tab to set it up.", type: "error" }); return; }
-      const sub = parts.slice(1);
-      if (!sub.length) { addTerminalLine({ text: "Usage: termux <command> [args...]", type: "info" }); return; }
-      setBusy(true);
-      try {
-        const res = await runTermuxCommand(sub[0], sub.slice(1));
-        if (res.stdout) res.stdout.split("\n").forEach((l) => l && addTerminalLine({ text: l, type: "output" }));
-        if (res.stderr) res.stderr.split("\n").forEach((l) => l && addTerminalLine({ text: l, type: "error" }));
-        addTerminalLine({ text: `exit ${res.exitCode}`, type: res.exitCode === 0 ? "success" : "error" });
-      } catch (e) {
-        addTerminalLine({ text: e instanceof Error ? e.message : String(e), type: "error" });
-      } finally { setBusy(false); }
-      return;
-    }
-    if (command === "preview") {
-      const tree = useIDEStore.getState().fileTree;
-      const entry = findPreviewEntry(tree);
-      if (!entry) { addTerminalLine({ text: "preview: no index.html or React entry found", type: "error" }); return; }
-      const ext = extOf(entry.name);
-      if (ext === "html") setPreviewUrl(htmlToDataUrl(buildHtmlPreview(entry, tree)));
-      else setPreviewUrl(htmlToDataUrl(buildReactPreview(entry, tree)));
-      setActivePanel("preview");
-      addTerminalLine({ text: `Preview ready: ${entry.path}`, type: "success" });
-      return;
-    }
-    if ((command === "run" && !parts[1]) || (command === "npm" && parts[1] === "run" && ["dev", "start"].includes(parts[2] || ""))) {
-      const tree = useIDEStore.getState().fileTree;
-      if (!findFileByName(tree, "package.json")) { addTerminalLine({ text: "run project: package.json not found", type: "error" }); return; }
-      setBusy(true);
-      setTerminalType("node");
-      try {
-        await runWorkspaceProject(tree, (text, type = "output") => addTerminalLine({ text, type }), setPreviewUrl);
-        setActivePanel("preview");
-      } catch (e) {
-        addTerminalLine({ text: e instanceof Error ? e.message : String(e), type: "error" });
-      } finally { setBusy(false); }
-      return;
-    }
-    if (command === "run" && parts[1]) {
-      const target = findFileByName(useIDEStore.getState().fileTree, parts.slice(1).join(" "));
-      if (!target?.content) { addTerminalLine({ text: `run: ${parts[1]}: not found`, type: "error" }); return; }
-      setBusy(true);
-      try {
-        await executeFile(target);
-      } finally { setBusy(false); }
-      return;
-    }
-    if (isPackageCommand(command)) {
-      setBusy(true);
-      try {
-        await runSandboxCommand(command, parts.slice(1), useIDEStore.getState().fileTree, (text, type = "output") => addTerminalLine({ text, type }), setPreviewUrl);
-      } catch (e) {
-        addTerminalLine({ text: e instanceof Error ? e.message : String(e), type: "error" });
-      } finally { setBusy(false); }
-      return;
-    }
-    if (["node", "python", "python3", "bash", "sh"].includes(command) && parts[1]) {
-      const target = fileFromCommandParts(useIDEStore.getState().fileTree, parts.slice(1));
-      if (target?.content) {
-        setBusy(true);
-        try { await executeFile(target); } finally { setBusy(false); }
-        return;
+declare global {
+  interface Window {
+    loadPyodide?: (opts: { indexURL: string }) => Promise<{
+      runPythonAsync: (code: string) => Promise<unknown>
+      globals: { get: (k: string) => unknown }
+    }>
+    _pyodide?: Awaited<ReturnType<NonNullable<Window["loadPyodide"]>>>
+    puter?: {
+      auth: { signIn: () => Promise<void>; isSignedIn: () => boolean }
+      ai: {
+        chat: (msgs: { role: string; content: string }[] | string, opts?: { model?: string }) => Promise<{ message: { content: Array<{ text: string }> } }>
       }
     }
-    if (command === "version") { addTerminalLine({ text: "SK Coder v1.0.0", type: "info" }); return; }
-    if (command === "pwd") { addTerminalLine({ text: "/workspace", type: "output" }); return; }
-    if (command === "date") { addTerminalLine({ text: new Date().toString(), type: "output" }); return; }
-    if (command === "whoami") { addTerminalLine({ text: "developer", type: "output" }); return; }
-    if (command === "echo") { addTerminalLine({ text: parts.slice(1).join(" "), type: "output" }); return; }
-    if (command === "ls" || command === "dir") {
-      listAtRoot(useIDEStore.getState().fileTree).split("\n").forEach((line) => addTerminalLine({ text: line, type: "output" }));
-      return;
+  }
+}
+
+type TermType = "shell" | "python" | "nodejs" | "java" | "ai"
+
+type TermLine = {
+  id: string
+  type: "input" | "output" | "error" | "info" | "success" | "ai-response" | "ai-thinking"
+  content: string
+}
+
+type TabDef = {
+  id: string
+  type: TermType
+  label: string
+}
+
+type TabState = {
+  lines: TermLine[]
+  input: string
+  history: string[]
+  histIdx: number
+  cwd: string
+  running: boolean
+}
+
+function mkLine(type: TermLine["type"], content: string): TermLine {
+  return { id: Math.random().toString(36).slice(2), type, content }
+}
+
+function initState(type: TermType): TabState {
+  const welcomes: Record<TermType, string> = {
+    shell: "SK-Shell — ls · cd · cat · run <file> · mkdir · touch · help",
+    python: "Python 3 — backend execution with stdlib + pip • Pyodide offline fallback",
+    nodejs: "Node.js — real Node.js runtime via backend · in-browser fallback",
+    java: "Java — real javac/java compiler via backend · Wandbox fallback",
+    ai: "SK-AI Terminal — ask questions, get code help. Enable Free Puter AI in Settings → SK-AI.",
+  }
+  return {
+    lines: [mkLine("info", welcomes[type])],
+    input: "",
+    history: [],
+    histIdx: -1,
+    cwd: "/",
+    running: false,
+  }
+}
+
+let pyodideLoading = false
+let pyodideReady = false
+let _tabCounter = 10
+
+function nextTabId(type: TermType) {
+  return `${type}-${++_tabCounter}`
+}
+
+async function ensurePyodide(onStatus: (msg: string) => void): Promise<boolean> {
+  if (pyodideReady && window._pyodide) return true
+  if (pyodideLoading) {
+    onStatus("Python loading, please wait...")
+    return false
+  }
+  pyodideLoading = true
+  onStatus("Loading Python 3.12... (10–30 seconds on first run)")
+  return new Promise((resolve) => {
+    const doLoad = (loadFn: typeof window.loadPyodide) => {
+      loadFn!({ indexURL: "https://cdn.jsdelivr.net/pyodide/v0.26.2/full/" })
+        .then((py) => {
+          window._pyodide = py
+          pyodideReady = true
+          pyodideLoading = false
+          onStatus("Python 3.12 ready")
+          resolve(true)
+        })
+        .catch(() => { pyodideLoading = false; resolve(false) })
     }
-    if (command === "cat" && parts[1]) {
-      const f = findFileByName(useIDEStore.getState().fileTree, parts.slice(1).join(" "));
-      if (f?.content !== undefined) f.content.split("\n").forEach((l) => addTerminalLine({ text: l, type: "output" }));
-      else addTerminalLine({ text: `cat: ${parts[1]}: No such file`, type: "error" });
-      return;
+    if (window.loadPyodide) { doLoad(window.loadPyodide); return }
+    const script = document.createElement("script")
+    script.src = "https://cdn.jsdelivr.net/pyodide/v0.26.2/full/pyodide.js"
+    script.onload = () => doLoad(window.loadPyodide)
+    script.onerror = () => { pyodideLoading = false; resolve(false) }
+    document.head.appendChild(script)
+  })
+}
+
+async function runPythonCode(code: string): Promise<{ output: string; error: string }> {
+  try {
+    const py = window._pyodide!
+    const wrapped = `
+import sys, io
+_buf = io.StringIO()
+sys.stdout = _buf
+sys.stderr = _buf
+try:
+${code.split("\n").map((l) => "    " + l).join("\n")}
+except Exception as e:
+    print(f"Error: {e}")
+finally:
+    sys.stdout = sys.__stdout__
+    sys.stderr = sys.__stderr__
+_buf.getvalue()
+`
+    const result = await py.runPythonAsync(wrapped)
+    return { output: String(result || ""), error: "" }
+  } catch (e) {
+    return { output: "", error: String(e) }
+  }
+}
+
+function findNodeAtPath(tree: FileNode[], path: string): FileNode | null {
+  for (const n of tree) {
+    if (n.path === path) return n
+    if (n.children) {
+      const found = findNodeAtPath(n.children, path)
+      if (found) return found
     }
-    if (command === "tree") {
-      const print = (nodes: FileNode[], prefix: string) => {
-        nodes.forEach((n, i) => {
-          const last = i === nodes.length - 1;
-          addTerminalLine({ text: `${prefix}${last ? "└── " : "├── "}${n.name}`, type: "output" });
-          if (n.children) print(n.children, prefix + (last ? "    " : "│   "));
-        });
-      };
-      addTerminalLine({ text: ".", type: "output" });
-      print(useIDEStore.getState().fileTree, "");
-      return;
+  }
+  return null
+}
+
+function getChildrenAt(tree: FileNode[], path: string): FileNode[] {
+  if (path === "/" || path === "") return tree
+  const node = findNodeAtPath(tree, path)
+  return node?.children || []
+}
+
+function resolvePath(cwd: string, input: string): string {
+  if (!input || input === "~") return "/"
+  if (input.startsWith("/")) return input.replace(/\/$/, "") || "/"
+  const parts = cwd === "/" ? [] : cwd.split("/").filter(Boolean)
+  for (const seg of input.split("/")) {
+    if (seg === "..") parts.pop()
+    else if (seg !== ".") parts.push(seg)
+  }
+  return parts.length ? "/" + parts.join("/") : "/"
+}
+
+function wrapJavaCode(code: string): string {
+  const t = code.trim()
+  if ((t.includes("class ") && t.includes("public static void main")) || t.startsWith("public class") || t.startsWith("class")) return t
+  return `public class Main {\n    public static void main(String[] args) throws Exception {\n        ${t.endsWith(";") ? t : t + ";"}\n    }\n}`
+}
+
+const TERM_COLORS: Record<TermType, string> = {
+  shell: "#4eaa25",
+  python: "#3572a5",
+  nodejs: "#68a063",
+  java: "#b07219",
+  ai: "#a78bfa",
+}
+
+const TERM_LABELS: Record<TermType, string> = {
+  shell: "SK-Shell",
+  python: "Python 3",
+  nodejs: "Node.js",
+  java: "Java",
+  ai: "SK-AI",
+}
+
+const ADD_OPTIONS: { type: TermType; label: string; desc: string }[] = [
+  { type: "shell", label: "SK-Shell", desc: "IDE filesystem · run any file via backend" },
+  { type: "python", label: "Python 3", desc: "Backend execution · Pyodide offline fallback" },
+  { type: "nodejs", label: "Node.js", desc: "Real Node.js via backend · in-browser fallback" },
+  { type: "java", label: "Java", desc: "Real javac/java via backend · Wandbox fallback" },
+  { type: "ai", label: "SK-AI", desc: "Ask code questions · Puter free AI or API key" },
+]
+
+function TermIcon({ type }: { type: TermType }) {
+  if (type === "shell") return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/>
+    </svg>
+  )
+  if (type === "python") return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M12 2C8 2 6 4 6 7v2h6v1H5C3 10 2 11 2 13s1 3 3 4h2v2c0 2 2 3 5 3s5-1 5-3v-2h6c2 0 3-1 3-3s-1-3-3-4h-1V7C22 4 20 2 16 2h-4z"/>
+    </svg>
+  )
+  if (type === "nodejs") return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/>
+    </svg>
+  )
+  if (type === "ai") return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <path d="M12 2a2 2 0 0 1 2 2c0 .74-.4 1.39-1 1.73V7h2a7 7 0 0 1 7 7H2a7 7 0 0 1 7-7h2V5.73A2 2 0 0 1 10 4a2 2 0 0 1 2-2z"/>
+      <rect x="2" y="14" width="20" height="8" rx="2"/>
+      <circle cx="8" cy="18" r="1" fill="currentColor" stroke="none"/>
+      <circle cx="16" cy="18" r="1" fill="currentColor" stroke="none"/>
+    </svg>
+  )
+  return (
+    <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+      <rect x="2" y="3" width="20" height="14" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/>
+    </svg>
+  )
+}
+
+async function ensurePuterForTerm(): Promise<boolean> {
+  if (window.puter) return true
+  return new Promise((resolve) => {
+    const s = document.createElement("script")
+    s.src = "https://js.puter.com/v2/"
+    s.onload = () => setTimeout(() => resolve(!!window.puter), 400)
+    s.onerror = () => resolve(false)
+    document.head.appendChild(s)
+  })
+}
+
+const DEFAULT_TABS: TabDef[] = [
+  { id: "shell-1", type: "shell", label: "SK-Shell" },
+  { id: "python-1", type: "python", label: "Python 3" },
+  { id: "nodejs-1", type: "nodejs", label: "Node.js" },
+  { id: "java-1", type: "java", label: "Java" },
+  { id: "ai-1", type: "ai", label: "SK-AI" },
+]
+
+const DEFAULT_STATES: Record<string, TabState> = {
+  "shell-1": initState("shell"),
+  "python-1": initState("python"),
+  "nodejs-1": initState("nodejs"),
+  "java-1": initState("java"),
+  "ai-1": initState("ai"),
+}
+
+export default function MultiTerminal() {
+  const { fileTree, addFile, settings, getActiveFile, setShowSettings, setSettingsTab, terminalBridgeCmd, setTerminalBridgeCmd, setErrors } = useIDEStore()
+
+  const [tabs, setTabs] = useState<TabDef[]>(DEFAULT_TABS)
+  const [activeTab, setActiveTab] = useState("shell-1")
+  const [tabStates, setTabStates] = useState<Record<string, TabState>>(DEFAULT_STATES)
+  const [showAddMenu, setShowAddMenu] = useState(false)
+  const [pyReady, setPyReady] = useState(pyodideReady)
+  const [aiReady, setAiReady] = useState(false)
+  const addMenuRef = useRef<HTMLDivElement>(null)
+
+  const outputRef = useRef<HTMLDivElement>(null)
+  const inputRef = useRef<HTMLInputElement>(null)
+
+  const activeState = tabStates[activeTab] ?? initState("shell")
+  const activeType = tabs.find((t) => t.id === activeTab)?.type ?? "shell"
+
+  useEffect(() => {
+    if (outputRef.current) {
+      outputRef.current.scrollTop = outputRef.current.scrollHeight
+    }
+  }, [tabStates, activeTab])
+
+  useEffect(() => {
+    inputRef.current?.focus()
+  }, [activeTab])
+
+  useEffect(() => {
+    if (!pyodideReady && !pyodideLoading) {
+      ensurePyodide((msg) => {
+        addLine("python-1", "info", msg)
+        if (msg.includes("ready")) setPyReady(true)
+      }).then((ok) => { if (ok) setPyReady(true) })
+    }
+  }, [])
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (addMenuRef.current && !addMenuRef.current.contains(e.target as Node)) {
+        setShowAddMenu(false)
+      }
+    }
+    if (showAddMenu) {
+      document.addEventListener("mousedown", handleClick)
+      return () => document.removeEventListener("mousedown", handleClick)
+    }
+    return undefined
+  }, [showAddMenu])
+
+  useEffect(() => {
+    if (!terminalBridgeCmd) return
+    const bridgeType: TermType = terminalBridgeCmd.targetTab === "python"
+      ? "python"
+      : terminalBridgeCmd.targetTab === "nodejs"
+      ? "nodejs"
+      : terminalBridgeCmd.targetTab === "java"
+      ? "java"
+      : terminalBridgeCmd.targetTab === "ai"
+      ? "ai"
+      : "shell"
+    const targetTab = tabs.find((t) => t.type === bridgeType)
+    const tabId = targetTab?.id ?? activeTab
+    setActiveTab(tabId)
+    const cmd = terminalBridgeCmd.cmd
+    const cwd = terminalBridgeCmd.cwd
+    setTerminalBridgeCmd(null)
+    setTimeout(() => {
+      if (cwd) {
+        updateState(tabId, { cwd })
+        addLine(tabId, "info", `Changed directory to ${cwd}`)
+      }
+      if (!cmd) return
+      addLine(tabId, "input", `$ ${cmd}`)
+      if (bridgeType === "shell") handleShell(tabId, cmd).catch(() => {})
+      else if (bridgeType === "python") handlePython(tabId, cmd).catch(() => {})
+      else if (bridgeType === "nodejs") handleNodeJs(tabId, cmd).catch(() => {})
+      else if (bridgeType === "java") handleJava(tabId, cmd).catch(() => {})
+      else handleAI(tabId, cmd).catch(() => {})
+    }, 50)
+  }, [terminalBridgeCmd])
+
+  function updateState(tabId: string, patch: Partial<TabState>) {
+    setTabStates((prev) => ({ ...prev, [tabId]: { ...(prev[tabId] ?? initState("shell")), ...patch } }))
+  }
+
+  function addLine(tabId: string, type: TermLine["type"], content: string) {
+    setTabStates((prev) => {
+      const cur = prev[tabId] ?? initState("shell")
+      return { ...prev, [tabId]: { ...cur, lines: [...cur.lines.slice(-600), mkLine(type, content)] } }
+    })
+  }
+
+  function addLines(tabId: string, type: TermLine["type"], text: string) {
+    const parts = text.split("\n").filter((l) => l !== "")
+    for (const p of parts) addLine(tabId, type, p)
+  }
+
+  function clearTab(tabId: string) {
+    updateState(tabId, { lines: [] })
+  }
+
+  function addNewTab(type: TermType) {
+    const id = nextTabId(type)
+    const label = TERM_LABELS[type]
+    setTabs((prev) => [...prev, { id, type, label }])
+    setTabStates((prev) => ({ ...prev, [id]: initState(type) }))
+    setActiveTab(id)
+    setShowAddMenu(false)
+    setTimeout(() => inputRef.current?.focus(), 50)
+  }
+
+  function closeTab(tabId: string) {
+    if (tabs.length === 1) return
+    const idx = tabs.findIndex((t) => t.id === tabId)
+    const newTabs = tabs.filter((t) => t.id !== tabId)
+    setTabs(newTabs)
+    if (activeTab === tabId) {
+      setActiveTab(newTabs[Math.max(0, idx - 1)].id)
+    }
+    setTabStates((prev) => {
+      const next = { ...prev }
+      delete next[tabId]
+      return next
+    })
+  }
+
+  async function handleShell(tabId: string, input: string) {
+    const state = tabStates[tabId]
+    const cwd = state?.cwd || "/"
+    const parts = input.trim().split(/\s+/)
+    const cmd = parts[0].toLowerCase()
+    const args = parts.slice(1)
+
+    if (cmd === "help") {
+      const help = [
+        "SK-Shell commands:",
+        "  ls [path]        — list files and directories",
+        "  cd <path>        — change directory (cd .. to go up)",
+        "  pwd              — print working directory",
+        "  cat <file>       — show file content",
+        "  echo <text>      — print text",
+        "  run <file>       — execute file (auto-detects language)",
+        "  python <file>    — run with Python 3",
+        "  node <file>      — run with Node.js",
+        "  java <file>      — run with Java",
+        "  mkdir <name>     — create folder",
+        "  touch <name>     — create empty file",
+        "  clear / cls      — clear terminal",
+        "  help             — show this help",
+        "",
+        "Tips:",
+        "  • Tab key        — autocomplete file/folder names",
+        "  • ↑↓ keys        — navigate command history",
+        "  • Ctrl+C         — cancel current operation",
+        "  • Ctrl+L         — clear screen",
+        "  • Right-click any file → Open in Terminal",
+      ]
+      for (const l of help) addLine(tabId, "info", l)
+      return
     }
 
-    if (current.id === "python") {
-      setBusy(true);
-      try { await runPython(cmd, (s) => addTerminalLine({ text: s, type: "output" })); }
-      catch (e) { addTerminalLine({ text: e instanceof Error ? e.message : String(e), type: "error" }); }
-      finally { setBusy(false); }
-      return;
-    }
-    if (current.id === "javascript") {
-      setBusy(true);
-      try { await runJS(cmd, (s, t) => addTerminalLine({ text: s, type: t === "error" ? "error" : "output" })); }
-      catch (e) { addTerminalLine({ text: e instanceof Error ? e.message : String(e), type: "error" }); }
-      finally { setBusy(false); }
-      return;
-    }
-    if (current.cloudExt) {
-      setBusy(true);
-      try {
-        setLastRun({ ext: current.cloudExt, source: cmd, label: `${current.label} input` });
-        addTerminalLine({ text: `Queued ${current.label} job...`, type: "info" });
-        showCloudResult(await runViaPiston(current.cloudExt, cmd), addTerminalLine);
-      } finally { setBusy(false); }
-      return;
-    }
-    if (current.id === "kali") {
-      addTerminalLine({ text: current.hint || "Needs a real Linux runtime.", type: "info" });
-      return;
-    }
-    addTerminalLine({ text: `${command}: command not found. Type help.`, type: "error" });
-  }, [busy, current, addTerminalLine, clearTerminal, executeFile, setActivePanel, setPreviewUrl]);
+    if (cmd === "pwd") { addLine(tabId, "output", cwd); return }
 
-  const copyLast = useCallback(() => {
-    const text = history[history.length - 1];
-    if (!text) return;
-    navigator.clipboard.writeText(text);
-    setCopiedCmd(true);
-    setTimeout(() => setCopiedCmd(false), 1500);
-  }, [history]);
+    if (cmd === "ls") {
+      const path = args[0] ? resolvePath(cwd, args[0]) : cwd
+      const children = getChildrenAt(fileTree, path)
+      if (children.length === 0) {
+        addLine(tabId, "info", "(empty directory)")
+      } else {
+        const dirs = children.filter((c) => c.type === "folder").map((c) => c.name + "/")
+        const fils = children.filter((c) => c.type === "file").map((c) => c.name)
+        if (dirs.length) addLine(tabId, "output", dirs.join("  "))
+        if (fils.length) addLine(tabId, "output", fils.join("  "))
+      }
+      return
+    }
 
-  const KIND_TABS: { id: TabKind; label: string; icon: any }[] = [
-    { id: "local", label: "Local", icon: Cloud },
-    { id: "cloud", label: "Cloud Shell", icon: Cloud },
-    { id: "termux", label: "Termux", icon: Smartphone },
-  ];
+    if (cmd === "cd") {
+      const target = resolvePath(cwd, args[0] || "/")
+      if (target === "/") { updateState(tabId, { cwd: "/" }); return }
+      const node = findNodeAtPath(fileTree, target)
+      if (!node || node.type !== "folder") { addLine(tabId, "error", `cd: ${args[0]}: No such directory`); return }
+      updateState(tabId, { cwd: target })
+      return
+    }
+
+    if (cmd === "cat") {
+      if (!args[0]) { addLine(tabId, "error", "cat: missing file operand"); return }
+      const path = resolvePath(cwd, args[0])
+      const node = findNodeAtPath(fileTree, path)
+      if (!node || node.type === "folder") { addLine(tabId, "error", `cat: ${args[0]}: No such file`); return }
+      addLines(tabId, "output", node.content || "(empty file)")
+      return
+    }
+
+    if (cmd === "echo") { addLine(tabId, "output", args.join(" ")); return }
+
+    if (cmd === "mkdir") {
+      if (!args[0]) { addLine(tabId, "error", "mkdir: missing operand"); return }
+      addFile(cwd, args[0].replace(/[/\\]/g, ""), "folder")
+      addLine(tabId, "success", `Created folder: ${args[0]}`)
+      return
+    }
+
+    if (cmd === "touch") {
+      if (!args[0]) { addLine(tabId, "error", "touch: missing operand"); return }
+      addFile(cwd, args[0], "file", "")
+      addLine(tabId, "success", `Created file: ${args[0]}`)
+      return
+    }
+
+    if (cmd === "run" || cmd === "python" || cmd === "node" || cmd === "java") {
+      const filename = args[0]
+      if (!filename) { addLine(tabId, "error", `${cmd}: specify a filename`); return }
+      const path = resolvePath(cwd, filename)
+      const node = findNodeAtPath(fileTree, path)
+      if (!node || node.type === "folder") { addLine(tabId, "error", `${cmd}: ${filename}: No such file`); return }
+      const code = node.content || ""
+      const ext = filename.split(".").pop()?.toLowerCase() || ""
+      updateState(tabId, { running: true })
+      addLine(tabId, "info", `Running ${filename}...`)
+      const backOk = await isBackendAvailable()
+
+      if (cmd === "python" || (cmd === "run" && ext === "py")) {
+        if (backOk) {
+          const res = await runOnBackend("python", code)
+          if (!res.error) {
+            if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
+            if (res.stderr) { addLines(tabId, "error", res.stderr.trimEnd()); const errs = parseErrors(res.stderr); if (errs.length) setErrors(errs) }
+            if (!res.stdout && !res.stderr) addLine(tabId, "info", "(no output)")
+            addLine(tabId, "info", `⏱ ${res.executionTime}ms | exit ${res.exitCode}`)
+            updateState(tabId, { running: false }); return
+          }
+        }
+        const publicRes = await runWithPiston(code, "python", settings.piston.serverUrl)
+        if (!publicRes.error) {
+          if (publicRes.output) addLines(tabId, "output", publicRes.output.trimEnd())
+          if (publicRes.stderr) addLines(tabId, "error", publicRes.stderr.trimEnd())
+          if (!publicRes.output && !publicRes.stderr) addLine(tabId, "info", "(no output)")
+          addLine(tabId, publicRes.exitCode === 0 ? "success" : "error", `Public runner exit ${publicRes.exitCode}`)
+          updateState(tabId, { running: false }); return
+        }
+        const ready = await ensurePyodide((msg) => { addLine(tabId, "info", msg); if (msg.includes("ready")) setPyReady(true) })
+        if (!ready) { addLine(tabId, "error", "Python not ready yet"); updateState(tabId, { running: false }); return }
+        const { output, error } = await runPythonCode(code)
+        if (output) addLines(tabId, "output", output.trimEnd())
+        if (error) addLine(tabId, "error", error)
+        if (!output && !error) addLine(tabId, "info", "(no output)")
+      } else if (cmd === "node" || (cmd === "run" && ["js", "jsx", "ts", "tsx", "mjs", "cjs"].includes(ext))) {
+        if (backOk) {
+          const res = await runOnBackend("node", code)
+          if (!res.error) {
+            if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
+            if (res.stderr) addLines(tabId, "error", res.stderr.trimEnd())
+            if (!res.stdout && !res.stderr) addLine(tabId, "info", "(no output)")
+            addLine(tabId, "info", `⏱ ${res.executionTime}ms | exit ${res.exitCode}`)
+            updateState(tabId, { running: false }); return
+          }
+        }
+        const publicRes = await runWithPiston(code, ext === "ts" || ext === "tsx" ? "typescript" : "javascript", settings.piston.serverUrl)
+        if (!publicRes.error) {
+          if (publicRes.output) addLines(tabId, "output", publicRes.output.trimEnd())
+          if (publicRes.stderr) addLines(tabId, "error", publicRes.stderr.trimEnd())
+          if (!publicRes.output && !publicRes.stderr) addLine(tabId, "info", "(no output)")
+          addLine(tabId, publicRes.exitCode === 0 ? "success" : "error", `Public runner exit ${publicRes.exitCode}`)
+        } else {
+          addLine(tabId, "info", "Public Node.js runner unavailable — using the limited browser JavaScript sandbox.")
+          const res = runNodeSimulated(code)
+          for (const l of res.output) addLine(tabId, "output", l)
+          if (res.error) addLines(tabId, "error", res.error)
+          if (!res.output.length && !res.error) addLine(tabId, "info", "(no output)")
+        }
+      } else if (cmd === "java" || (cmd === "run" && ext === "java")) {
+        const javaCode = wrapJavaCode(code)
+        if (backOk) {
+          const res = await runOnBackend("java", javaCode)
+          if (!res.error) {
+            if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
+            if (res.stderr) { addLines(tabId, "error", res.stderr.trimEnd()); const errs = parseErrors(res.stderr); if (errs.length) setErrors(errs) }
+            if (!res.stdout && !res.stderr) addLine(tabId, "info", "(no output)")
+            addLine(tabId, "info", `⏱ ${res.executionTime}ms | exit ${res.exitCode}`)
+            updateState(tabId, { running: false }); return
+          }
+        }
+        const res = await runWithPiston(javaCode, "java")
+        if (res.output) addLines(tabId, "output", res.output.trimEnd())
+        if (res.stderr) addLines(tabId, "error", res.stderr.trimEnd())
+        if (!res.output && !res.stderr) addLine(tabId, "info", "(no output)")
+      } else if (cmd === "run") {
+        const langMap: Record<string, string> = { cpp: "cpp", c: "c", rs: "rust", go: "go", rb: "ruby", php: "php", sh: "bash", kt: "kotlin" }
+        const lang = langMap[ext] || ""
+        if (!lang) { addLine(tabId, "error", `Cannot run .${ext} files — use a language-specific terminal`); updateState(tabId, { running: false }); return }
+        if (backOk) {
+          const res = await runOnBackend(lang, code)
+          if (!res.error) {
+            if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
+            if (res.stderr) { addLines(tabId, "error", res.stderr.trimEnd()); const errs = parseErrors(res.stderr); if (errs.length) setErrors(errs) }
+            if (!res.stdout && !res.stderr) addLine(tabId, "info", "(no output)")
+            addLine(tabId, "info", `⏱ ${res.executionTime}ms | exit ${res.exitCode}`)
+            updateState(tabId, { running: false }); return
+          }
+        }
+        const res = await runWithPiston(code, lang)
+        if (res.output) addLines(tabId, "output", res.output.trimEnd())
+        if (res.stderr) addLines(tabId, "error", res.stderr.trimEnd())
+        if (!res.output && !res.stderr) addLine(tabId, "info", "(no output)")
+      }
+      updateState(tabId, { running: false })
+      return
+    }
+
+    addLine(tabId, "error", `${cmd}: command not found. Type 'help' for available commands.`)
+  }
+
+  async function handlePython(tabId: string, code: string) {
+    const state = tabStates[tabId]
+    const cwd = state?.cwd || "/"
+    const trimmed = code.trim()
+    const runMatch = trimmed.match(/^(?:run|python)\s+(\S+)$/)
+    let execCode = trimmed
+    if (runMatch) {
+      const filename = runMatch[1]
+      const path = resolvePath(cwd, filename)
+      const node = findNodeAtPath(fileTree, path)
+      if (!node || node.type === "folder") {
+        addLine(tabId, "error", `run: ${filename}: No such file`)
+        return
+      }
+      addLine(tabId, "info", `Running ${filename}...`)
+      execCode = node.content || ""
+    }
+    const backOk = await isBackendAvailable()
+    if (backOk) {
+      const res = await runOnBackend("python", execCode)
+      if (!res.error) {
+        if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
+        if (res.stderr) { addLines(tabId, "error", res.stderr.trimEnd()); const errs = parseErrors(res.stderr); if (errs.length) setErrors(errs) }
+        if (!res.stdout && !res.stderr) addLine(tabId, "info", "(no output)")
+        addLine(tabId, "info", `⏱ ${res.executionTime}ms | exit ${res.exitCode}`)
+        return
+      }
+    }
+    const publicRes = await runWithPiston(execCode, "python", settings.piston.serverUrl)
+    if (!publicRes.error) {
+      if (publicRes.output) addLines(tabId, "output", publicRes.output.trimEnd())
+      if (publicRes.stderr) addLines(tabId, "error", publicRes.stderr.trimEnd())
+      if (!publicRes.output && !publicRes.stderr) addLine(tabId, "info", "(no output)")
+      addLine(tabId, publicRes.exitCode === 0 ? "success" : "error", `Public runner exit ${publicRes.exitCode}`)
+      return
+    }
+    const ready = await ensurePyodide((msg) => { addLine(tabId, "info", msg); if (msg.includes("ready")) setPyReady(true) })
+    if (!ready) { addLine(tabId, "error", "Python not ready — please wait"); return }
+    const { output, error } = await runPythonCode(execCode)
+    if (output) addLines(tabId, "output", output.trimEnd())
+    if (error) addLine(tabId, "error", error)
+    if (!output && !error) addLine(tabId, "info", "(no output)")
+  }
+
+  async function handleNodeJs(tabId: string, code: string) {
+    const state = tabStates[tabId]
+    const cwd = state?.cwd || "/"
+    const trimmed = code.trim()
+    const runMatch = trimmed.match(/^(?:run|node)\s+(\S+)/)
+    let execCode = trimmed
+    if (runMatch) {
+      const filename = runMatch[1]
+      const path = resolvePath(cwd, filename)
+      const node = findNodeAtPath(fileTree, path)
+      if (!node || node.type === "folder") { addLine(tabId, "error", `run: ${filename}: No such file`); return }
+      addLine(tabId, "info", `Running ${filename}...`)
+      execCode = node.content || ""
+    }
+    const backOk = await isBackendAvailable()
+    if (backOk) {
+      const res = await runOnBackend("node", execCode)
+      if (!res.error) {
+        if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
+        if (res.stderr) addLines(tabId, "error", res.stderr.trimEnd())
+        if (!res.stdout && !res.stderr) addLine(tabId, "info", "(no output)")
+        addLine(tabId, "info", `⏱ ${res.executionTime}ms | exit ${res.exitCode}`)
+        return
+      }
+    }
+    const publicRes = await runWithPiston(execCode, "javascript", settings.piston.serverUrl)
+    if (!publicRes.error) {
+      if (publicRes.output) addLines(tabId, "output", publicRes.output.trimEnd())
+      if (publicRes.stderr) addLines(tabId, "error", publicRes.stderr.trimEnd())
+      if (!publicRes.output && !publicRes.stderr) addLine(tabId, "info", "(no output)")
+      addLine(tabId, publicRes.exitCode === 0 ? "success" : "error", `Public runner exit ${publicRes.exitCode}`)
+    } else {
+      addLine(tabId, "info", "Public Node.js runner unavailable — using the limited browser JavaScript sandbox.")
+      const res = runNodeSimulated(execCode)
+      for (const l of res.output) addLine(tabId, "output", l)
+      if (res.error) addLines(tabId, "error", res.error)
+      if (!res.output.length && !res.error) addLine(tabId, "info", "(no output)")
+    }
+  }
+
+  async function handleJava(tabId: string, code: string) {
+    const state = tabStates[tabId]
+    const cwd = state?.cwd || "/"
+    const trimmed = code.trim()
+    const runMatch = trimmed.match(/^(?:run|java)\s+(\S+)/)
+    let javaCode = trimmed
+    if (runMatch) {
+      const filename = runMatch[1]
+      const path = resolvePath(cwd, filename)
+      const node = findNodeAtPath(fileTree, path)
+      if (!node || node.type === "folder") { addLine(tabId, "error", `run: ${filename}: No such file`); return }
+      addLine(tabId, "info", `Running ${filename}...`)
+      javaCode = node.content || ""
+    }
+    javaCode = wrapJavaCode(javaCode)
+    const backOk = await isBackendAvailable()
+    if (backOk) {
+      const res = await runOnBackend("java", javaCode)
+      if (!res.error) {
+        if (res.stdout) addLines(tabId, "output", res.stdout.trimEnd())
+        if (res.stderr) { addLines(tabId, "error", res.stderr.trimEnd()); const errs = parseErrors(res.stderr); if (errs.length) setErrors(errs) }
+        if (!res.stdout && !res.stderr) addLine(tabId, "info", "(no output)")
+        addLine(tabId, "info", `⏱ ${res.executionTime}ms | exit ${res.exitCode}`)
+        return
+      }
+    }
+    const res = await runWithPiston(javaCode, "java")
+    if (res.output) addLines(tabId, "output", res.output.trimEnd())
+    if (res.stderr) addLines(tabId, "error", res.stderr.trimEnd())
+    if (!res.output && !res.stderr) addLine(tabId, "info", "(no output)")
+  }
+
+  async function handleAI(tabId: string, question: string) {
+    const { apiKey, usePuter, keyStatus, autoContext } = settings.ai
+    const hasKey = usePuter || (apiKey && keyStatus === "valid")
+    if (!hasKey) {
+      addLine(tabId, "error", "No AI configured — go to Settings → SK-AI to add a key or enable Free Puter AI")
+      setSettingsTab("ai")
+      setShowSettings(true)
+      return
+    }
+    const thinkingId = Math.random().toString(36).slice(2)
+    setTabStates((prev) => {
+      const cur = prev[tabId] ?? initState("ai")
+      return { ...prev, [tabId]: { ...cur, lines: [...cur.lines, { id: thinkingId, type: "ai-thinking" as const, content: "Thinking..." }] } }
+    })
+    const activeFile = getActiveFile()
+    const systemPrompt = buildSystemPrompt({ activeFilePath: activeFile?.path, activeFileContent: autoContext ? activeFile?.content : undefined, fileTree: [] })
+    try {
+      let reply = ""
+      if (usePuter) {
+        const ok = await ensurePuterForTerm()
+        if (!ok) { reply = "Puter.js failed to load. Check your internet." }
+        else {
+          if (!window.puter!.auth.isSignedIn()) await window.puter!.auth.signIn()
+          const resp = await window.puter!.ai.chat(`${systemPrompt}\n\nUser: ${question}`) as unknown
+          const raw = resp as { message?: { content?: unknown } }
+          const c = raw?.message?.content
+          reply = typeof c === "string" ? c : Array.isArray(c) ? ((c[0] as { text?: string })?.text ?? String(c[0] ?? "")) : typeof resp === "string" ? (resp as string) : String(c ?? "")
+          if (!reply.trim()) reply = "SK-AI returned an empty response. Try rephrasing."
+          setAiReady(true)
+        }
+      } else {
+        const messages: AIChatMessage[] = [{ id: "q", role: "user", content: question, timestamp: Date.now() }]
+        const res = await sendAIMessage({ key: apiKey, customEndpoint: settings.ai.apiEndpoint, customModel: settings.ai.model, messages, systemPrompt })
+        if (res.error) reply = `Error: ${res.error}`
+        else reply = res.content || "(no response)"
+      }
+      setTabStates((prev) => {
+        const cur = prev[tabId] ?? initState("ai")
+        const withoutThinking = cur.lines.filter((l) => l.id !== thinkingId)
+        const replyLines = reply.split("\n").map((line) => mkLine("ai-response", line))
+        return { ...prev, [tabId]: { ...cur, lines: [...withoutThinking, ...replyLines, mkLine("info", "─────")] } }
+      })
+    } catch (e) {
+      setTabStates((prev) => {
+        const cur = prev[tabId] ?? initState("ai")
+        const withoutThinking = cur.lines.filter((l) => l.id !== thinkingId)
+        return { ...prev, [tabId]: { ...cur, lines: [...withoutThinking, mkLine("error", `AI Error: ${String(e)}`)] } }
+      })
+    }
+  }
+
+  async function handleSubmit(tabId: string) {
+    const state = tabStates[tabId]
+    const input = state?.input?.trim()
+    if (!input || state?.running) return
+    const type = tabs.find((t) => t.id === tabId)?.type || "shell"
+    const newHistory = [input, ...(state.history || []).slice(0, 99)]
+    updateState(tabId, { input: "", history: newHistory, histIdx: -1 })
+    const prompts: Record<TermType, string> = { shell: `[${state.cwd || "/"}]$`, python: ">>>", nodejs: ">", java: "java>", ai: "you>" }
+    addLine(tabId, "input", `${prompts[type]} ${input}`)
+    if (input === "clear" || input === "cls") { updateState(tabId, { lines: [] }); return }
+    updateState(tabId, { running: true })
+    try {
+      if (type === "shell") await handleShell(tabId, input)
+      else if (type === "python") await handlePython(tabId, input)
+      else if (type === "nodejs") await handleNodeJs(tabId, input)
+      else if (type === "java") await handleJava(tabId, input)
+      else if (type === "ai") await handleAI(tabId, input)
+    } finally {
+      setTabStates((prev) => prev[tabId] ? { ...prev, [tabId]: { ...prev[tabId], running: false } } : prev)
+    }
+  }
+
+  function handleKeyDown(e: React.KeyboardEvent<HTMLInputElement>, tabId: string) {
+    const state = tabStates[tabId]
+    if (e.key === "Enter") { handleSubmit(tabId); return }
+    if (e.key === "ArrowUp") {
+      e.preventDefault()
+      const next = Math.min((state?.histIdx ?? -1) + 1, (state?.history?.length ?? 0) - 1)
+      updateState(tabId, { histIdx: next, input: state?.history?.[next] || "" })
+      return
+    }
+    if (e.key === "ArrowDown") {
+      e.preventDefault()
+      const next = Math.max((state?.histIdx ?? -1) - 1, -1)
+      updateState(tabId, { histIdx: next, input: next === -1 ? "" : state?.history?.[next] || "" })
+      return
+    }
+    if (e.key === "c" && e.ctrlKey) { addLine(tabId, "info", "^C"); updateState(tabId, { input: "", running: false }) }
+    if (e.key === "l" && e.ctrlKey) { e.preventDefault(); updateState(tabId, { lines: [] }) }
+    if (e.key === "Tab") {
+      e.preventDefault()
+      const input = state?.input || ""
+      const cwd = state?.cwd || "/"
+      const children = getChildrenAt(fileTree, cwd)
+      const lastWord = input.split(" ").pop() || ""
+      const match = children.find((c) => c.name.startsWith(lastWord))
+      if (match) {
+        const words = input.split(" ")
+        words[words.length - 1] = match.type === "folder" ? match.name + "/" : match.name
+        updateState(tabId, { input: words.join(" ") })
+      }
+    }
+  }
+
+  const promptLabels: Record<TermType, string> = {
+    shell: `${activeState.cwd || "/"}$`,
+    python: ">>>",
+    nodejs: ">",
+    java: "java>",
+    ai: "ask>",
+  }
+
+  const placeholders: Record<TermType, string> = {
+    shell: "ls · cd <dir> · run <file> · mkdir · help  (↑↓ history, Tab complete)",
+    python: "print('hello')  • import math  • any Python 3 code",
+    nodejs: "console.log('hello')  • require('fs')  • full Node.js",
+    java: "System.out.println(\"hello\");  • or paste full class",
+    ai: "Ask a coding question, explain an error, generate code...",
+  }
 
   return (
-    <div className="h-full flex flex-col bg-terminal-bg">
-      <div className="flex items-center gap-1 px-1 border-b border-border shrink-0 bg-card/40">
-        {KIND_TABS.map((k) => (
-          <button
-            key={k.id}
-            onClick={() => setTabKind(k.id)}
-            className={`px-3 py-1.5 text-[11px] font-semibold whitespace-nowrap transition-colors ${tabKind === k.id ? "text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}
-          >
-            {k.label}
-          </button>
-        ))}
-      </div>
+    <div className="multi-terminal">
+      <div className="multi-terminal-tabs">
+        {tabs.map((tab) => {
+          const isActive = tab.id === activeTab
+          const isReady = tab.type === "python" ? pyReady : tab.type === "shell"
+          const isAiReady = tab.type === "ai" && (aiReady || !!(settings.ai.usePuter || settings.ai.apiKey))
+          return (
+            <div
+              key={tab.id}
+              className={`multi-term-tab ${isActive ? "active" : ""}`}
+              onClick={() => setActiveTab(tab.id)}
+            >
+              <span style={{ color: TERM_COLORS[tab.type], display: "flex", alignItems: "center" }}>
+                <TermIcon type={tab.type} />
+              </span>
+              <span>{tab.label}</span>
+              {(isReady || tab.type === "nodejs" || tab.type === "java" || isAiReady) && (
+                <span style={{ width: 5, height: 5, borderRadius: "50%", background: tab.type === "ai" ? "#a78bfa" : "var(--green)", flexShrink: 0 }} />
+              )}
+            </div>
+          )
+        })}
 
-      {tabKind === "cloud" && <div className="flex-1 min-h-0"><CloudShell /></div>}
-      {tabKind === "termux" && <div className="flex-1 min-h-0 overflow-y-auto scrollbar-thin"><TermuxSetup /></div>}
-      {tabKind === "local" && (
-        <>
-      <div className="flex items-center gap-1 px-1 border-b border-border shrink-0 overflow-x-auto no-scrollbar">
-        {TERMINALS.map((t) => (
+        <div ref={addMenuRef} style={{ position: "relative", flexShrink: 0 }}>
           <button
-            key={t.id}
-            onClick={() => setTerminalType(t.id)}
-            className={`px-2.5 py-1.5 text-[11px] font-medium whitespace-nowrap rounded-t transition-colors ${terminalType === t.id ? "bg-card text-foreground border-b-2 border-primary" : "text-muted-foreground hover:text-foreground"}`}
-          >
-            {t.label}
-          </button>
-        ))}
-        <div className="ml-auto flex items-center gap-1 px-1">
-          {lastRun && langForExt(lastRun.ext) && (
-            <button onClick={retryLast} disabled={busy} className="p-1 hover:bg-secondary rounded text-muted-foreground disabled:opacity-40" title="Retry last cloud run">
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
+            className="term-add-btn"
+            onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); setShowAddMenu((v) => !v) }}
+            title="Add new terminal"
+          >+</button>
+          {showAddMenu && (
+            <div
+              className="term-add-menu"
+              onMouseDown={(e) => e.stopPropagation()}
+            >
+              <div className="term-add-menu-title">New Terminal</div>
+              {ADD_OPTIONS.map((opt) => (
+                <button
+                  key={opt.type}
+                  className="term-add-option"
+                  onMouseDown={(e) => { e.preventDefault(); addNewTab(opt.type) }}
+                >
+                  <span style={{ color: TERM_COLORS[opt.type] }}><TermIcon type={opt.type} /></span>
+                  <div>
+                    <div style={{ fontWeight: 600 }}>{opt.label}</div>
+                    <div style={{ fontSize: 10, color: "var(--text-muted)", marginTop: 1 }}>{opt.desc}</div>
+                  </div>
+                </button>
+              ))}
+            </div>
           )}
-          <button onClick={copyLast} className="p-1 hover:bg-secondary rounded text-muted-foreground" title="Copy command">
-            {copiedCmd ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
-          </button>
-          <button onClick={clearTerminal} className="p-1 hover:bg-secondary rounded text-muted-foreground" title="Clear">
-            <Trash2 className="w-3.5 h-3.5" />
+        </div>
+
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", paddingRight: 4, gap: 2 }}>
+          <button className="btn-icon" onClick={() => clearTab(activeTab)} title="Clear terminal">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/>
+            </svg>
           </button>
         </div>
       </div>
-      {(current.cloudExt || current.id === "kali") && current.hint && <div className="bg-info/10 text-[11px] text-muted-foreground px-3 py-1.5 border-b border-border flex items-center gap-1.5"><Cloud className="w-3 h-3" />{current.hint}</div>}
-      <div className="flex-1 overflow-y-auto scrollbar-thin p-2 font-mono text-xs leading-5">
-        {terminalLines.map((line) => {
-          const clickable = Boolean(line.filePath && line.lineNumber);
+
+      <div className="terminal-output" ref={outputRef} onClick={() => inputRef.current?.focus()}>
+        {activeState.lines.map((line) => {
+          if (line.type === "ai-thinking") {
+            return (
+              <div key={line.id} className="terminal-line info" style={{ display: "flex", alignItems: "center", gap: "0.5rem", color: "#a78bfa", opacity: 0.8 }}>
+                <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: "spin 1s linear infinite", flexShrink: 0 }}>
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+                </svg>
+                <span style={{ fontStyle: "italic" }}>{line.content}</span>
+              </div>
+            )
+          }
+          if (line.type === "ai-response") {
+            const isCode = line.content.startsWith("```") || line.content.startsWith("    ")
+            if (line.content === "─────") return <div key={line.id} style={{ borderTop: "1px solid rgba(167,139,250,0.2)", margin: "0.4rem 0" }} />
+            return (
+              <div key={line.id} style={{
+                fontFamily: isCode ? "var(--font-mono)" : "inherit",
+                fontSize: isCode ? 11 : 12,
+                color: isCode ? "#e2c08d" : "var(--text-primary)",
+                background: isCode ? "rgba(167,139,250,0.06)" : "transparent",
+                borderLeft: isCode ? "2px solid #a78bfa" : "none",
+                paddingLeft: isCode ? "0.5rem" : 0,
+                lineHeight: 1.6, whiteSpace: "pre-wrap", wordBreak: "break-word",
+              }}>{line.content}</div>
+            )
+          }
           return (
-            <button
-              key={line.id}
-              type="button"
-              onClick={() => {
-                if (!line.filePath) return;
-                const target = findFileByName(useIDEStore.getState().fileTree, line.filePath);
-                if (target) {
-                  openFile(target);
-                  setEditorTarget({ path: target.path, lineNumber: line.lineNumber || 1, columnNumber: line.columnNumber });
-                  setActivePanel("editor");
-                }
-              }}
-              className={`${clickable ? "underline decoration-dotted text-left cursor-pointer" : "cursor-text"} block w-full ${line.type === "error" ? "text-destructive whitespace-pre-wrap" : line.type === "info" ? "text-info whitespace-pre-wrap" : line.type === "input" ? "text-success font-medium whitespace-pre-wrap" : line.type === "success" ? "text-success whitespace-pre-wrap" : "text-foreground whitespace-pre-wrap"}`}
-            >{line.text}</button>
-          );
+            <div key={line.id} className={`terminal-line ${line.type}`}>
+              <span>{line.content}</span>
+            </div>
+          )
         })}
-        {busy && <div className="text-info animate-pulse">Working...</div>}
-        <div ref={bottomRef} />
+        {activeState.running && activeType !== "ai" && (
+          <div className="terminal-line info" style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+            <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ animation: "spin 1s linear infinite", flexShrink: 0 }}>
+              <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+            </svg>
+            <span>Running...</span>
+          </div>
+        )}
       </div>
-      <div className="flex items-center border-t border-border px-2 py-1.5 shrink-0 gap-1">
-        <span className="text-success text-xs font-mono font-bold shrink-0">{current.prompt}</span>
+
+      <div className="terminal-input-row">
+        <span className="terminal-prompt-label" style={{ color: TERM_COLORS[activeType], fontSize: 11, whiteSpace: "nowrap", maxWidth: 150, overflow: "hidden", textOverflow: "ellipsis" }}>
+          {promptLabels[activeType]}
+        </span>
         <input
-          type="text"
-          disabled={busy}
-          className="flex-1 bg-transparent text-xs font-mono text-foreground outline-none placeholder:text-muted-foreground/40 disabled:opacity-50"
-          placeholder={busy ? "Executing..." : current.cloudExt ? `Type ${current.cloudExt} code, Enter to compile & run...` : current.id === "kali" ? "Kali needs native runtime" : "Type a command..."}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" && e.currentTarget.value.trim()) {
-              const v = e.currentTarget.value.trim();
-              e.currentTarget.value = "";
-              handleCommand(v);
-            }
-            if (e.key === "ArrowUp") {
-              e.preventDefault();
-              const ni = Math.min(hIdx + 1, history.length - 1);
-              setHIdx(ni);
-              if (history.length) e.currentTarget.value = history[history.length - 1 - ni] || "";
-            }
-            if (e.key === "ArrowDown") {
-              e.preventDefault();
-              const ni = Math.max(hIdx - 1, -1);
-              setHIdx(ni);
-              e.currentTarget.value = ni >= 0 ? history[history.length - 1 - ni] || "" : "";
-            }
-          }}
+          ref={inputRef}
+          className="terminal-input"
+          value={activeState.input}
+          onChange={(e) => updateState(activeTab, { input: e.target.value })}
+          onKeyDown={(e) => handleKeyDown(e, activeTab)}
+          placeholder={placeholders[activeType]}
+          disabled={activeState.running}
+          autoComplete="off"
+          spellCheck={false}
+          style={{ width: "auto", border: "none", padding: 0, background: "transparent" }}
         />
+        <button
+          className="btn btn-primary"
+          style={{ padding: "0.2rem 0.6rem", fontSize: 11, flexShrink: 0 }}
+          onClick={() => handleSubmit(activeTab)}
+          disabled={activeState.running || !activeState.input.trim()}
+        >
+          Run
+        </button>
       </div>
-        </>
-      )}
     </div>
-  );
+  )
 }
