@@ -2,7 +2,7 @@ import type { ActivePanel, FileNode, TerminalType } from "@/types/ide"
 import { htmlToDataUrl, buildHtmlPreview } from "@/lib/previewBuilder"
 import { runJS } from "@/lib/jsRunner"
 import { runPython } from "@/lib/pyodideRunner"
-import { langForExt, runViaPiston, type CloudResult } from "@/lib/pistonRunner"
+import { runViaPiston, type CloudResult } from "@/lib/pistonRunner"
 import { runViaWandbox } from "@/lib/wandboxRunner"
 
 type RunOptions = { activeTab?: { fileId?: string; name: string; path: string; language: string; content: string }; fileTree: FileNode[]; addTerminalLine: (line: { text: string; type: "input" | "output" | "error" | "info" | "success" }) => void; setPreviewUrl: (url: string) => void; setActivePanel: (panel: ActivePanel) => void; setTerminalType: (type: TerminalType) => void }
@@ -32,20 +32,11 @@ export async function runWorkspace(options: RunOptions) {
     await runJS(tab.content, (text, type = "output") => options.addTerminalLine({ text, type }))
     return
   }
-  if (ext === "java") {
-    options.setTerminalType("java")
-    options.addTerminalLine({ text: "Running Java with Wandbox...", type: "info" })
-    const primary = await runViaWandbox(ext, tab.content)
-    if (!primary.offline) { publishResult(primary, options.addTerminalLine); return }
-    options.addTerminalLine({ text: "Wandbox is unavailable. Using the cloud compiler fallback.", type: "info" })
-    publishResult(await runViaPiston(ext, tab.content, "", tab.path), options.addTerminalLine)
+  if (ext === "bash" || ext === "sh") {
+    options.setTerminalType("bash")
+    options.addTerminalLine({ text: "Running Bash with the cloud fallback...", type: "info" })
+    publishResult(await runViaPiston("bash", tab.content, "", tab.path), options.addTerminalLine)
     return
   }
-  if (ext && langForExt(ext)) {
-    options.setTerminalType(ext === "bash" || ext === "sh" ? "bash" : "cpp")
-    options.addTerminalLine({ text: `Running .${ext} with the cloud compiler...`, type: "info" })
-    publishResult(await runViaPiston(ext, tab.content, "", tab.path), options.addTerminalLine)
-    return
-  }
-  options.addTerminalLine({ text: `No runner is available for .${ext ?? ""}.`, type: "info" })
+  options.addTerminalLine({ text: `The .${ext ?? ""} runner is planned for Phase 2. Phase 1 supports Python, Node.js, and Bash.`, type: "info" })
 }

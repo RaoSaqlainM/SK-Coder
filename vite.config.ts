@@ -15,7 +15,7 @@ export default defineConfig(() => ({
     },
     chunkSizeWarningLimit: 5000,
     target: "es2015",
-    minify: "terser",
+    minify: "terser" as const,
   },
   server: {
     host: "::",

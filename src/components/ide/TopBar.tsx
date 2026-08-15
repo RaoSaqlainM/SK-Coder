@@ -1,39 +1,64 @@
-import { useState, useRef, useCallback } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 import { Bot, ChevronRight, Download, FilePlus, FolderOpen, HelpCircle, Menu, MoreVertical, Play, Settings, Square } from "lucide-react";
 import { useIDEStore } from "@/store/ideStore";
-import { filesFromFileList, pickedFilesToTree } from "@/lib/importProject";
-import { runWorkspace } from "@/lib/runWorkspace";
+import type { ImportResult, PickedFile } from "@/lib/importProject";
 import { storeImportedWorkspace } from "@/lib/storageManager";
 
 import NewFileDialog from "./NewFileDialog";
+import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 
 
 export default function TopBar() {
   const {
     isRunning, setIsRunning, toggleSidebar, addTerminalLine, setActivePanel,
-    openFile, setFileTree, fileTree, openTabs, activeTabId, setPreviewUrl,
+    openFile, setFileTree, closeAllTabs, fileTree, openTabs, activeTabId, setPreviewUrl,
     downloadProject, setAiChatOpen, setTerminalType, settings,
   } = useIDEStore();
   const [newFileOpen, setNewFileOpen] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [pendingImport, setPendingImport] = useState<{ result: ImportResult; itemCount: number } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const activeTab = openTabs.find((t) => t.id === activeTabId);
 
-  const importPicked = useCallback(async (picked: ReturnType<typeof filesFromFileList>) => {
-    const { tree, firstOpenable } = await pickedFilesToTree(picked, (text, type = "info") => addTerminalLine({ text, type }));
-    if (!tree.length) return;
+  const applyImport = useCallback(async (result: ImportResult, itemCount: number, mode: "replace" | "merge") => {
+    const { mergeFileTrees } = await import("@/lib/importProject");
+    const { tree, firstOpenable } = result;
     const current = useIDEStore.getState().fileTree;
-    const nextTree = [...current, ...tree];
+    const merged = mergeFileTrees(current, tree, mode);
+    const nextTree = merged.tree;
+    if (mode === "replace") closeAllTabs();
     setFileTree(nextTree);
     if (firstOpenable) openFile(firstOpenable);
-    addTerminalLine({ text: `Opened ${picked.length} item(s) into workspace`, type: "success" });
+    addTerminalLine({ text: `${mode === "replace" ? "Opened" : "Merged"} ${itemCount} item${itemCount === 1 ? "" : "s"} into the workspace.`, type: "success" });
+    if (merged.conflicts) addTerminalLine({ text: `${merged.conflicts} existing file${merged.conflicts === 1 ? " was" : "s were"} replaced by the imported project.`, type: "info" });
     void storeImportedWorkspace(nextTree, settings.backend.url, settings.backend.enabled).then((result) => addTerminalLine({ text: result.message, type: result.target === "server" ? "info" : "success" }));
-  }, [addTerminalLine, openFile, setFileTree, settings.backend.enabled, settings.backend.url]);
+  }, [addTerminalLine, closeAllTabs, openFile, setFileTree, settings.backend.enabled, settings.backend.url]);
+
+  const importPicked = useCallback(async (picked: PickedFile[]) => {
+    const { pickedFilesToTree } = await import("@/lib/importProject");
+    const result = await pickedFilesToTree(picked, (text, type = "info") => addTerminalLine({ text, type }));
+    if (!result.tree.length) return;
+    if (useIDEStore.getState().fileTree.length) {
+      setPendingImport({ result, itemCount: picked.length });
+      return;
+    }
+    await applyImport(result, picked.length, "replace");
+  }, [addTerminalLine, applyImport]);
+
+  useEffect(() => {
+    const handleImport = (event: Event) => {
+      const files = (event as CustomEvent<PickedFile[]>).detail;
+      if (files?.length) void importPicked(files);
+    };
+    document.addEventListener("sk-coder-import", handleImport);
+    return () => document.removeEventListener("sk-coder-import", handleImport);
+  }, [importPicked]);
 
   const handleFileInput = useCallback(async (e: React.ChangeEvent<HTMLInputElement>) => {
     if (!e.target.files?.length) return;
+    const { filesFromFileList } = await import("@/lib/importProject");
     await importPicked(filesFromFileList(e.target.files));
     e.target.value = "";
   }, [importPicked]);
@@ -56,6 +81,7 @@ export default function TopBar() {
     }
     setIsRunning(true);
     try {
+      const { runWorkspace } = await import("@/lib/runWorkspace");
       await runWorkspace({ activeTab, fileTree, addTerminalLine, setPreviewUrl, setActivePanel, setTerminalType });
     } catch (error) {
       setActivePanel("terminal");
@@ -90,6 +116,7 @@ export default function TopBar() {
           </button>
           <button
             onClick={handleRun}
+            aria-label={isRunning ? "Stop running workspace" : "Run workspace"}
             className={`flex h-11 w-11 items-center justify-center rounded transition-all ${isRunning ? "bg-destructive text-destructive-foreground" : "bg-primary text-primary-foreground hover:bg-primary/90"}`}
           >
             {isRunning ? <Square className="w-3 h-3" /> : <Play className="w-3 h-3" />}
@@ -136,6 +163,19 @@ export default function TopBar() {
       <input ref={fileInputRef} type="file" multiple className="hidden" onChange={handleFileInput} />
       <input ref={folderInputRef} type="file" multiple {...({ webkitdirectory: "", directory: "" } as Record<string, string>)} className="hidden" onChange={handleFileInput} />
       <NewFileDialog open={newFileOpen} onClose={() => setNewFileOpen(false)} parentPath="" />
+      <AlertDialog open={Boolean(pendingImport)} onOpenChange={(open) => { if (!open) setPendingImport(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Open project into this workspace?</AlertDialogTitle>
+            <AlertDialogDescription>Replace starts a clean workspace. Merge keeps current files and replaces matching imported paths.</AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <button type="button" onClick={() => { if (pendingImport) void applyImport(pendingImport.result, pendingImport.itemCount, "merge"); setPendingImport(null); }} className="inline-flex h-10 items-center justify-center rounded-md border border-input bg-background px-4 text-sm font-medium transition-colors hover:bg-accent">Merge</button>
+            <AlertDialogAction onClick={() => { if (pendingImport) void applyImport(pendingImport.result, pendingImport.itemCount, "replace"); setPendingImport(null); }}>Replace</AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </>
   );
 }

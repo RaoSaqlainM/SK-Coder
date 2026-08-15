@@ -217,7 +217,7 @@ export const useIDEStore = create<State & Actions>()(persist((set, get) => ({
   setPreviewUrl: (previewUrl) => set({ previewUrl }),
   refreshPreview: () => set((state) => ({ previewKey: state.previewKey + 1 })),
   setContextMenu: (contextMenu) => set({ contextMenu }),
-  toggleFolder: (path) => set((state) => { const expandedFolders = new Set(state.expandedFolders); expandedFolders.has(path) ? expandedFolders.delete(path) : expandedFolders.add(path); return { expandedFolders } }),
+  toggleFolder: (path) => set((state) => { const expandedFolders = new Set(state.expandedFolders); if (expandedFolders.has(path)) expandedFolders.delete(path); else expandedFolders.add(path); return { expandedFolders } }),
   setSidebarOpen: (sidebarOpen) => set({ sidebarOpen }),
   toggleSidebar: () => set((state) => ({ sidebarOpen: !state.sidebarOpen })),
   setIsRunning: (isRunning) => set({ isRunning }),

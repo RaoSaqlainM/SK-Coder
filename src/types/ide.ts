@@ -6,6 +6,8 @@ export type FileNode = {
   content?: string
   children?: FileNode[]
   language?: string
+  encoding?: "text" | "base64"
+  mimeType?: string
 }
 
 export type Tab = {
@@ -20,14 +22,14 @@ export type Tab = {
 }
 
 export type TerminalType = "shell" | "python" | "javascript" | "node" | "java" | "cpp" | "bash" | "kali" | "gitbash"
-export type ActivePanel = "files" | "editor" | "terminal" | "preview" | "ai" | "settings" | "cloud" | "apk"
+export type ActivePanel = "files" | "editor" | "terminal" | "preview" | "ai" | "settings" | "git" | "cloud" | "apk"
 export type PreviewViewport = "mobile" | "tablet" | "desktop"
 export type TerminalLine = { id: string; text: string; type: "input" | "output" | "error" | "info" | "success"; timestamp: number; filePath?: string; lineNumber?: number; columnNumber?: number }
 export type AIChatMessage = { id: string; role: "user" | "assistant"; content: string; timestamp: number }
 export type ErrorEntry = { id: string; line: number; col?: number; message: string; severity: "error" | "warning" | "info"; file?: string }
 
 export type Settings = {
-  editor: { fontSize: number; fontFamily: string; tabSize: number; wordWrap: "on" | "off" | "wordWrapColumn"; minimap: boolean; lineNumbers: "on" | "off" | "relative"; autoSave: boolean; theme: "vs-dark" | "vs-light" | "hc-black"; bracketPairs: boolean; smoothScrolling: boolean; cursorStyle: "line" | "block" | "underline"; renderWhitespace: "none" | "boundary" | "all" }
+  editor: { fontSize: number; fontFamily: string; tabSize: number; wordWrap: "on" | "off" | "wordWrapColumn"; minimap: boolean; lineNumbers: "on" | "off" | "relative"; autoSave: boolean; theme: "vs-dark" | "vs-light" | "hc-black"; bracketPairs: boolean; smoothScrolling: boolean; cursorStyle: "line" | "block" | "underline"; renderWhitespace: "none" | "boundary" | "selection" | "all" }
   ai: { apiKey: string; apiEndpoint: string; model: string; keyStatus: "none" | "valid" | "invalid" | "expired" | "checking"; autoContext: boolean; autoAnalyze: boolean; usePuter: boolean }
   storage: { workspacePath: string; useExternalStorage: boolean; sdCardPath: string; downloadPath: string; mobileWorkspacePath: string; browserDownloadPath: string }
   github: { token: string; username: string; codespaceActive: string }
@@ -71,4 +73,9 @@ export function getFileSize(content: string) {
   if (bytes < 1024) return `${bytes} B`
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
+export function fileDataUrl(node: FileNode) {
+  if (node.encoding !== "base64" || !node.content) return ""
+  return `data:${node.mimeType || "application/octet-stream"};base64,${node.content}`
 }

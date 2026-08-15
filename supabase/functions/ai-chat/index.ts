@@ -6,7 +6,18 @@ const corsHeaders = {
     "authorization, x-client-info, apikey, content-type, x-supabase-client-platform, x-supabase-client-platform-version, x-supabase-client-runtime, x-supabase-client-runtime-version",
 };
 
-async function tryPuter(messages: any[]): Promise<string> {
+type ChatMessage = { role: string; content: string };
+type PuterResponse = { result?: string | { message?: { content?: string } } };
+type GeminiResponse = { candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }> };
+type OpenAIResponse = { choices?: Array<{ message?: { content?: string } }> };
+
+function parseMessages(value: unknown): ChatMessage[] | null {
+  if (!Array.isArray(value)) return null;
+  const messages = value.filter((message): message is ChatMessage => typeof message === "object" && message !== null && "role" in message && "content" in message && typeof message.role === "string" && typeof message.content === "string");
+  return messages.length === value.length ? messages : null;
+}
+
+async function tryPuter(messages: ChatMessage[]): Promise<string> {
   const resp = await fetch("https://api.puter.com/drivers/call", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -18,15 +29,15 @@ async function tryPuter(messages: any[]): Promise<string> {
     }),
   });
   if (!resp.ok) throw new Error(`Puter ${resp.status}`);
-  const data = await resp.json();
-  if (data?.result?.message?.content) return data.result.message.content;
-  if (typeof data?.result === "string") return data.result;
+  const data = await resp.json() as PuterResponse;
+  if (typeof data.result === "object" && data.result?.message?.content) return data.result.message.content;
+  if (typeof data.result === "string") return data.result;
   throw new Error("Puter format error");
 }
 
-async function tryGemini(messages: any[], key: string): Promise<string> {
-  const lastUser = messages.filter((m: any) => m.role === "user").pop();
-  const systemMsg = messages.find((m: any) => m.role === "system");
+async function tryGemini(messages: ChatMessage[], key: string): Promise<string> {
+  const lastUser = messages.filter((message) => message.role === "user").pop();
+  const systemMsg = messages.find((message) => message.role === "system");
   const parts = [];
   if (systemMsg) parts.push({ text: systemMsg.content });
   if (lastUser) parts.push({ text: lastUser.content });
@@ -39,11 +50,11 @@ async function tryGemini(messages: any[], key: string): Promise<string> {
     }
   );
   if (!resp.ok) throw new Error(`Gemini ${resp.status}`);
-  const data = await resp.json();
-  return data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+  const data = await resp.json() as GeminiResponse;
+  return data.candidates?.[0]?.content?.parts?.[0]?.text || "";
 }
 
-async function tryGroq(messages: any[], key: string): Promise<string> {
+async function tryGroq(messages: ChatMessage[], key: string): Promise<string> {
   const resp = await fetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -53,11 +64,11 @@ async function tryGroq(messages: any[], key: string): Promise<string> {
     body: JSON.stringify({ model: "llama-3.3-70b-versatile", messages }),
   });
   if (!resp.ok) throw new Error(`Groq ${resp.status}`);
-  const data = await resp.json();
-  return data?.choices?.[0]?.message?.content || "";
+  const data = await resp.json() as OpenAIResponse;
+  return data.choices?.[0]?.message?.content || "";
 }
 
-async function tryOpenRouter(messages: any[], key: string): Promise<string> {
+async function tryOpenRouter(messages: ChatMessage[], key: string): Promise<string> {
   const resp = await fetch("https://openrouter.ai/api/v1/chat/completions", {
     method: "POST",
     headers: {
@@ -67,8 +78,8 @@ async function tryOpenRouter(messages: any[], key: string): Promise<string> {
     body: JSON.stringify({ model: "meta-llama/llama-3.3-70b-instruct:free", messages }),
   });
   if (!resp.ok) throw new Error(`OpenRouter ${resp.status}`);
-  const data = await resp.json();
-  return data?.choices?.[0]?.message?.content || "";
+  const data = await resp.json() as OpenAIResponse;
+  return data.choices?.[0]?.message?.content || "";
 }
 
 serve(async (req) => {
@@ -77,8 +88,9 @@ serve(async (req) => {
   }
 
   try {
-    const { messages } = await req.json();
-    if (!messages || !Array.isArray(messages)) {
+    const body = await req.json() as { messages?: unknown };
+    const messages = parseMessages(body.messages);
+    if (!messages) {
       return new Response(JSON.stringify({ error: "messages array required" }), {
         status: 400,
         headers: { ...corsHeaders, "Content-Type": "application/json" },
@@ -105,9 +117,8 @@ serve(async (req) => {
             headers: { ...corsHeaders, "Content-Type": "application/json" },
           });
         }
-      } catch (e) {
-        lastError = e instanceof Error ? e.message : String(e);
-        continue;
+      } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error);
       }
     }
 
@@ -115,9 +126,9 @@ serve(async (req) => {
       JSON.stringify({ error: `All providers failed. Last: ${lastError}` }),
       { status: 502, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
-  } catch (e) {
+  } catch (error) {
     return new Response(
-      JSON.stringify({ error: e instanceof Error ? e.message : "Unknown error" }),
+      JSON.stringify({ error: error instanceof Error ? error.message : "Unknown error" }),
       { status: 500, headers: { ...corsHeaders, "Content-Type": "application/json" } }
     );
   }
