@@ -2,14 +2,12 @@ import { useState, useEffect, useCallback } from "react";
 import { useIDEStore } from "@/store/ideStore";
 import { Monitor, Smartphone, Tablet, ExternalLink, RefreshCw, Share2, AlertTriangle } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { buildHtmlPreview, htmlToDataUrl } from "@/lib/previewBuilder";
 
 export default function PreviewPane() {
-  const { previewUrl, openTabs, activeTabId, settings, previewKey, setErrors, setActivePanel, fileTree } = useIDEStore();
+  const { previewUrl, openTabs, activeTabId, settings } = useIDEStore();
   const [viewport, setViewport] = useState<"mobile" | "tablet" | "desktop">(settings.preview.viewport);
   const [refreshKey, setRefreshKey] = useState(0);
   const [copied, setCopied] = useState(false);
-  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const activeTab = openTabs.find((t) => t.id === activeTabId);
 
   const getPreviewContent = useCallback(() => {
@@ -18,7 +16,7 @@ export default function PreviewPane() {
 
     const ext = activeTab.name.split(".").pop()?.toLowerCase();
     if (ext === "html") {
-      return htmlToDataUrl(buildHtmlPreview({ id: activeTab.fileId, name: activeTab.name, path: activeTab.path, type: "file", content: activeTab.content, language: activeTab.language }, fileTree));
+      return `data:text/html;charset=utf-8,${encodeURIComponent(activeTab.content)}`;
     }
     if (ext === "css") {
       return `data:text/html;charset=utf-8,${encodeURIComponent(
@@ -45,7 +43,7 @@ export default function PreviewPane() {
       )}`;
     }
     return null;
-  }, [previewUrl, activeTab, fileTree]);
+  }, [previewUrl, activeTab]);
 
   const previewSrc = getPreviewContent();
   const viewportWidths = { mobile: "375px", tablet: "768px", desktop: "100%" };
@@ -54,20 +52,7 @@ export default function PreviewPane() {
     if (settings.preview.autoRefresh && previewSrc) {
       setRefreshKey((k) => k + 1);
     }
-  }, [activeTab?.content, previewKey, previewSrc, settings.preview.autoRefresh]);
-
-  useEffect(() => {
-    const handleMessage = (event: MessageEvent<{ source?: string; message?: string; line?: number; column?: number }>) => {
-      if (event.data?.source !== "sk-coder-preview") return;
-      const message = event.data.message || "Preview runtime error.";
-      setRuntimeError(message);
-      if (activeTab) setErrors([...useIDEStore.getState().errors.filter((error) => error.file !== activeTab.path || error.message !== message), { id: `preview-${activeTab.path}-${Date.now()}`, file: activeTab.path, line: event.data.line || 1, col: event.data.column, message, severity: "error" }]);
-    };
-    window.addEventListener("message", handleMessage);
-    return () => window.removeEventListener("message", handleMessage);
-  }, [activeTab, setErrors]);
-
-  useEffect(() => setRuntimeError(null), [previewSrc, refreshKey]);
+  }, [activeTab?.content]);
 
   const handleShare = useCallback(async () => {
     if (!previewSrc) return;
@@ -131,7 +116,6 @@ export default function PreviewPane() {
           Preview link copied
         </div>
       )}
-      {runtimeError && settings.preview.showErrors && <div className="flex items-center justify-between gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-1.5 text-[11px] text-destructive"><span className="truncate">Preview error: {runtimeError}</span><button type="button" onClick={() => setActivePanel("editor")} className="shrink-0 font-medium underline">View Problems</button></div>}
       <div className="flex-1 flex items-start justify-center overflow-auto p-2 bg-terminal-bg">
         {previewSrc ? (
           <iframe

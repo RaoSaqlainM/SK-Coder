@@ -17,7 +17,7 @@ type SettingsSection = "editor" | "preview" | "ai" | "storage" | "cloudshell" | 
 
 export default function SettingsPanel() {
   const { settings, updateSettings } = useIDEStore();
-  const { editor, preview, ai, storage, backend } = settings;
+  const { editor, preview, ai, storage } = settings;
   const [activeSection, setActiveSection] = useState<SettingsSection>(null);
 
   const updateEditor = (partial: Partial<typeof editor>) =>
@@ -244,25 +244,11 @@ export default function SettingsPanel() {
               className="w-full bg-secondary text-xs text-foreground px-3 py-2 rounded-md mt-1 outline-none focus:ring-1 focus:ring-primary"
             />
           </div>
-          <SettingsToggle
-            label="Use Temporary Cloud Storage"
-            checked={backend.enabled}
-            onChange={(v) => updateSettings({ backend: { ...backend, enabled: v } })}
-          />
-          <div>
-            <Label className="text-xs text-muted-foreground">Backend URL</Label>
-            <input
-              type="url"
-              value={backend.url}
-              placeholder="https://api.example.com"
-              onChange={(e) => updateSettings({ backend: { ...backend, url: e.target.value } })}
-              className="w-full bg-secondary text-xs text-foreground px-3 py-2 rounded-md mt-1 outline-none focus:ring-1 focus:ring-primary"
-            />
-          </div>
           <div className="bg-secondary/30 rounded-lg p-3">
             <p className="text-[11px] text-muted-foreground">
-              Imported workspaces use the configured server until it reaches its 100 GB offload threshold.
-              The latest workspace snapshot then stays in this browser’s IndexedDB. Server copies expire after 72 hours.
+              When external storage is enabled, all project files, packages, and cache
+              will be stored on the SD card to save internal storage space.
+              This is recommended for devices with limited storage.
             </p>
           </div>
         </div>
@@ -506,3 +492,4 @@ function NotificationsSection() {
     </div>
   );
 }
+

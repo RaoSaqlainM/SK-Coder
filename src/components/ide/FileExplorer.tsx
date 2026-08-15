@@ -2,7 +2,7 @@ import { useState, useCallback } from "react";
 import {
   ChevronRight, ChevronDown, File, Folder, FolderOpen,
   FileCode, FileText, Image, Database, Braces, Globe, Palette,
-  Search, FilePlus, MoreVertical
+  Search, FilePlus
 } from "lucide-react";
 import { useIDEStore } from "@/store/ideStore";
 import type { FileNode } from "@/types/ide";
@@ -92,7 +92,7 @@ function TreeItem({ node, depth = 0 }: { node: FileNode; depth?: number }) {
     <div>
       <div
         className={cn(
-          "flex min-h-11 items-center gap-1.5 px-2 cursor-pointer text-[13px] transition-colors select-none",
+          "flex items-center gap-1.5 py-1 px-2 cursor-pointer text-[13px] transition-colors select-none",
           isActive
             ? "bg-accent/30 text-foreground"
             : "text-sidebar-foreground hover:bg-secondary/40"
@@ -123,21 +123,7 @@ function TreeItem({ node, depth = 0 }: { node: FileNode; depth?: number }) {
             {getFileIcon(node.name)}
           </>
         )}
-        <span className="min-w-0 flex-1 truncate">{node.name}</span>
-        <button
-          type="button"
-          aria-label={`Open actions for ${node.name}`}
-          className="flex h-11 w-11 shrink-0 items-center justify-center rounded text-muted-foreground hover:bg-sidebar-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary"
-          onClick={(event) => {
-            event.preventDefault();
-            event.stopPropagation();
-            const rect = event.currentTarget.getBoundingClientRect();
-            setContextMenu({ x: rect.right, y: rect.bottom, node });
-          }}
-          onTouchStart={(event) => event.stopPropagation()}
-        >
-          <MoreVertical className="h-3.5 w-3.5" />
-        </button>
+        <span className="truncate">{node.name}</span>
       </div>
       {node.type === "folder" && isExpanded && node.children && (
         <div>
@@ -178,18 +164,18 @@ export default function FileExplorer() {
 
   return (
     <div className="h-full flex flex-col bg-sidebar">
-        <div className="flex min-h-11 items-center justify-between px-3 border-b border-sidebar-border shrink-0">
+      <div className="flex items-center justify-between px-3 py-2 border-b border-sidebar-border shrink-0">
         <span className="text-[11px] font-semibold text-muted-foreground uppercase tracking-widest">Explorer</span>
         <div className="flex items-center gap-0.5">
           <button
             onClick={() => setShowSearch(!showSearch)}
-            className="flex h-11 w-11 items-center justify-center rounded hover:bg-sidebar-accent transition-colors"
+            className="p-1 rounded hover:bg-sidebar-accent transition-colors"
           >
             <Search className="w-3.5 h-3.5 text-muted-foreground" />
           </button>
           <button
             onClick={() => setShowNewFile(true)}
-            className="flex h-11 w-11 items-center justify-center rounded hover:bg-sidebar-accent transition-colors"
+            className="p-1 rounded hover:bg-sidebar-accent transition-colors"
           >
             <FilePlus className="w-3.5 h-3.5 text-muted-foreground" />
           </button>

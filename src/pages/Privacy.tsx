@@ -1,2 +1,0 @@
-import { Link } from "react-router-dom"
-export default function Privacy() { return <main className="mx-auto max-w-3xl p-6 text-sm leading-7 text-foreground"><Link to="/" className="text-primary">← Back to SK Coder</Link><h1 className="mt-6 text-3xl font-semibold">Privacy Policy</h1><p>SK Coder stores workspace data locally in your browser. Temporary execution data sent to your configured backend is subject to the retention period stated in the User Guide. AI and GitHub credentials are only used to fulfill the action you request.</p></main> }

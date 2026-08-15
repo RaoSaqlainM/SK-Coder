@@ -4,19 +4,16 @@ import { useState, useCallback } from "react";
 import NewFileDialog from "./NewFileDialog";
 import { nodeToZipBlob, shareBlobOrDownload, shareTextOrDownload } from "@/lib/shareProject";
 import { runWorkspace } from "@/lib/runWorkspace";
-import type { FileNode } from "@/types/ide";
-import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, AlertDialogDescription, AlertDialogFooter, AlertDialogHeader, AlertDialogTitle } from "@/components/ui/alert-dialog";
 
 export default function ContextMenu() {
   const {
     contextMenu, setContextMenu, deleteFileNode, openFile, addTerminalLine,
-    setActivePanel, fileTree, setPreviewUrl, setTerminalType, setTerminalBridgeCmd,
+    setActivePanel, fileTree, setPreviewUrl, setTerminalType,
   } = useIDEStore();
   const [renaming, setRenaming] = useState(false);
   const [newName, setNewName] = useState("");
   const [showNewFile, setShowNewFile] = useState(false);
   const [newFileParent, setNewFileParent] = useState("");
-  const [pendingDelete, setPendingDelete] = useState<FileNode | null>(null);
 
   const close = useCallback(() => {
     setContextMenu(null);
@@ -24,10 +21,9 @@ export default function ContextMenu() {
     setNewName("");
   }, [setContextMenu]);
 
-  const deleteDialog = <AlertDialog open={Boolean(pendingDelete)} onOpenChange={(open) => { if (!open) setPendingDelete(null); }}><AlertDialogContent><AlertDialogHeader><AlertDialogTitle>Delete {pendingDelete?.name}?</AlertDialogTitle><AlertDialogDescription>This permanently removes the selected {pendingDelete?.type === "folder" ? "folder and its contents" : "file"} from the current workspace.</AlertDialogDescription></AlertDialogHeader><AlertDialogFooter><AlertDialogCancel>Cancel</AlertDialogCancel><AlertDialogAction className="bg-destructive text-destructive-foreground hover:bg-destructive/90" onClick={() => { if (pendingDelete) deleteFileNode(pendingDelete.path); setPendingDelete(null); }}>Delete</AlertDialogAction></AlertDialogFooter></AlertDialogContent></AlertDialog>;
-
-  if (!contextMenu && !showNewFile && !pendingDelete) return null;
-  if (!contextMenu) return <>{showNewFile && <NewFileDialog open={showNewFile} onClose={() => setShowNewFile(false)} parentPath={newFileParent} />}{deleteDialog}</>;
+  if (!contextMenu && !showNewFile) return null;
+  if (!contextMenu && showNewFile) return <NewFileDialog open={showNewFile} onClose={() => setShowNewFile(false)} parentPath={newFileParent} />;
+  if (!contextMenu) return null;
 
   const { x, y, node } = contextMenu;
 
@@ -38,11 +34,10 @@ export default function ContextMenu() {
   };
 
   const handleRunner = (runner: "node" | "python" | "bash") => {
-    const targetTab = runner === "python" ? "python" : runner === "node" ? "node" : "bash";
-    setTerminalType(targetTab);
+    setTerminalType(runner === "python" ? "python" : runner === "node" ? "node" : "bash");
     setActivePanel("terminal");
     addTerminalLine({ text: `Workspace: ${node.path}`, type: "info" });
-    setTerminalBridgeCmd({ cmd: "ls", targetTab });
+    addTerminalLine({ text: runner === "node" ? "setup: npm install && npm run dev" : runner === "python" ? "setup: python main.py" : "setup: bash script.sh", type: "output" });
     close();
   };
 
@@ -89,7 +84,7 @@ export default function ContextMenu() {
       setActivePanel("terminal");
       close();
     }},
-    { label: "Delete", icon: Trash2, action: () => { setPendingDelete(node); close(); }, danger: true },
+    { label: "Delete", icon: Trash2, action: () => { deleteFileNode(node.path); close(); }, danger: true },
   ];
 
   return (
@@ -126,7 +121,6 @@ export default function ContextMenu() {
         </div>
       </div>
       {showNewFile && <NewFileDialog open={showNewFile} onClose={() => setShowNewFile(false)} parentPath={newFileParent} />}
-      {deleteDialog}
     </>
   );
 }
