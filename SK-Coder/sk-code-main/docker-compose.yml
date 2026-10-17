@@ -49,10 +49,10 @@ services:
     deploy:
       resources:
         limits:
-          cpus: '2'
+          cpus: '1'
           memory: 4096M
         reservations:
-          cpus: '0.5'
+          cpus: '0.25'
           memory: 1024M
     environment:
       PORT: 3001
