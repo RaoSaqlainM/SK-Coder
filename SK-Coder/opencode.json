@@ -1,0 +1,121 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "default_agent": "build",
+  "agent": {
+    "build": {
+      "mode": "primary",
+      "model": "amazon-bedrock/claude-sonnet-4-6",
+      "description": "Primary autonomous co-pilot and lead engineer running Claude Sonnet via AWS Bedrock credits.",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "claude-heavy": {
+      "mode": "subagent",
+      "model": "amazon-bedrock/claude-sonnet-4-6",
+      "description": "Dedicated subagent for deep code refactoring and complex logic using Claude Sonnet.",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "claude-3-7": {
+      "mode": "subagent",
+      "model": "amazon-bedrock/claude-3-7-sonnet",
+      "description": "Subagent for extended hybrid reasoning and step-by-step code analysis using Claude 3.7 Sonnet.",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "claude-3-5-v2": {
+      "mode": "subagent",
+      "model": "amazon-bedrock/claude-3-5-sonnet-v2",
+      "description": "Subagent for fast multi-file edits and proven refactoring pipelines using Claude 3.5 Sonnet v2.",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "systems": {
+      "mode": "subagent",
+      "model": "openrouter/z-ai/glm-5",
+      "description": "Subagent for backend system architecture, long context, Rust, Go, and .NET using Z.ai GLM-5.",
+      "permission": {
+        "edit": "allow",
+        "bash": "allow"
+      }
+    },
+    "explore": {
+      "mode": "subagent",
+      "model": "amazon-bedrock/nova-pro",
+      "description": "Subagent for fast repository search, directory indexing, and codebase mapping using Amazon Nova Pro.",
+      "permission": {
+        "edit": "deny",
+        "bash": "deny"
+      }
+    },
+    "fast": {
+      "mode": "subagent",
+      "model": "openrouter/nvidia/nemotron-3.5-lightning:free",
+      "description": "Subagent for high-speed syntax verification, formatting, and free completions using Nvidia Nemotron 3.5 Lightning.",
+      "permission": {
+        "edit": "allow",
+        "bash": "deny"
+      }
+    },
+    "image": {
+      "mode": "subagent",
+      "model": "amazon-bedrock/nova-canvas",
+      "description": "Subagent for generating visual UI assets, banners, and logos using Amazon Nova Canvas via Bedrock credits.",
+      "permission": {
+        "edit": "allow",
+        "bash": "deny"
+      }
+    },
+    "openai-free": {
+      "mode": "subagent",
+      "model": "openrouter/openai/gpt-oss-120b:free",
+      "description": "Subagent for test generation and documentation using OpenAI open-weight models.",
+      "permission": {
+        "edit": "allow",
+        "bash": "deny"
+      }
+    }
+  },
+  "provider": {
+    "amazon-bedrock": {
+      "options": {
+        "region": "us-east-1"
+      },
+      "models": {
+        "claude-sonnet-4-6": {
+          "modelID": "anthropic.claude-sonnet-4-6",
+          "name": "Claude Sonnet 4.6"
+        },
+        "claude-3-7-sonnet": {
+          "modelID": "us.anthropic.claude-3-7-sonnet-20250219-v1:0",
+          "name": "Claude 3.7 Sonnet"
+        },
+        "claude-3-5-sonnet-v2": {
+          "modelID": "us.anthropic.claude-3-5-sonnet-20241022-v2:0",
+          "name": "Claude 3.5 Sonnet v2"
+        },
+        "nova-pro": {
+          "modelID": "us.amazon.nova-pro-v1:0",
+          "name": "Amazon Nova Pro"
+        },
+        "nova-canvas": {
+          "modelID": "amazon.nova-canvas-v1:0",
+          "name": "Amazon Nova Canvas"
+        }
+      }
+    },
+    "openrouter": {
+      "options": {
+        "apiKey": "{env:OPENROUTER_API_KEY}"
+      }
+    }
+  }
+}

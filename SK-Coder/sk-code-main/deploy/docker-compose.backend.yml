@@ -1,0 +1,110 @@
+services:
+  runtime:
+    build:
+      context: ../runtime
+    image: ${RUNTIME_IMAGE:-sk-coder-runtime:latest}
+    command: ["true"]
+
+  runtime-gui:
+    build:
+      context: ../runtime-gui
+      args:
+        BASE_RUNTIME_IMAGE: ${RUNTIME_IMAGE:-sk-coder-runtime:latest}
+    image: ${GUI_RUNTIME_IMAGE:-sk-coder-gui:latest}
+    command: ["true"]
+    depends_on:
+      runtime:
+        condition: service_completed_successfully
+
+  runtime-apk:
+    build:
+      context: ../runtime-apk
+    image: ${APK_RUNTIME_IMAGE:-sk-coder-apk:latest}
+    command: ["true"]
+
+  registry-proxy:
+    image: ubuntu/squid:latest
+    volumes:
+      - ./registry-proxy.squid.conf:/etc/squid/squid.conf:ro
+    tmpfs:
+      - /run
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+    cpus: 0.5
+    networks:
+      installer:
+        aliases:
+          - registry-proxy
+      registry-egress: {}
+    restart: unless-stopped
+
+  backend:
+    build:
+      context: ../backend
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      PORT: 3001
+      WORKSPACE_ROOT: /var/lib/sk-coder/workspaces
+      WORKSPACE_METADATA_PATH: /var/lib/sk-coder/workspaces/.registry/workspaces.json
+      RUNTIME_IMAGE: ${RUNTIME_IMAGE:-sk-coder-runtime:latest}
+      GUI_RUNTIME_IMAGE: ${GUI_RUNTIME_IMAGE:-sk-coder-gui:latest}
+      APK_RUNTIME_IMAGE: ${APK_RUNTIME_IMAGE:-sk-coder-apk:latest}
+      WORKSPACE_SAFETY_RESERVE_BYTES: ${WORKSPACE_SAFETY_RESERVE_BYTES:-42949672960}
+      SHARED_POOL_MAX_BYTES: ${SHARED_POOL_MAX_BYTES:-53687091200}
+      SHARED_POOL_ADMISSION_BYTES: ${SHARED_POOL_ADMISSION_BYTES:-51539607552}
+      WORKSPACE_INITIAL_RESERVATION_BYTES: ${WORKSPACE_INITIAL_RESERVATION_BYTES:-1048576}
+      WORKSPACE_INSTALL_RESERVE_BYTES: ${WORKSPACE_INSTALL_RESERVE_BYTES:-536870912}
+      SESSION_MAX_BYTES: ${SESSION_MAX_BYTES:-2147483648}
+      WORKSPACE_MAX_BYTES: ${WORKSPACE_MAX_BYTES:-53687091200}
+      RUNNER_SCRATCH_MAX_BYTES: ${RUNNER_SCRATCH_MAX_BYTES:-16106127360}
+      STAGING_MAX_BYTES: ${STAGING_MAX_BYTES:-5368709120}
+      RUNTIME_CACHE_MAX_BYTES: ${RUNTIME_CACHE_MAX_BYTES:-10737418240}
+      PACKAGE_CACHE_MAX_BYTES: ${PACKAGE_CACHE_MAX_BYTES:-10737418240}
+      LOG_MAX_BYTES: ${LOG_MAX_BYTES:-5368709120}
+      HOST_OVERHEAD_BYTES: ${HOST_OVERHEAD_BYTES:-3221225472}
+      SESSION_MAX_COUNT: ${SESSION_MAX_COUNT:-3}
+      SESSION_IDLE_MINUTES: ${SESSION_IDLE_MINUTES:-5}
+      RUNNER_MAX_COUNT: ${RUNNER_MAX_COUNT:-1}
+      RUNNER_QUEUE_MAX_COUNT: ${RUNNER_QUEUE_MAX_COUNT:-20}
+      WORKSPACE_NETWORK_MODE: ${WORKSPACE_NETWORK_MODE:-none}
+      DEPENDENCY_INSTALL_NETWORK_MODE: ${DEPENDENCY_INSTALL_NETWORK_MODE:-none}
+      DEPENDENCY_INSTALL_PROXY_URL: ${DEPENDENCY_INSTALL_PROXY_URL:-}
+      DEPENDENCY_INSTALL_NETWORK_NAME: ${DEPENDENCY_INSTALL_NETWORK_NAME:-skcoder-installer}
+      DEPENDENCY_INSTALL_TIMEOUT_MS: ${DEPENDENCY_INSTALL_TIMEOUT_MS:-180000}
+      PREVIEW_SESSION_MAX_COUNT: ${PREVIEW_SESSION_MAX_COUNT:-1}
+      PREVIEW_SESSION_TTL_MS: ${PREVIEW_SESSION_TTL_MS:-900000}
+      PREVIEW_SESSION_MEMORY_MB: ${PREVIEW_SESSION_MEMORY_MB:-1024}
+      GUI_SESSION_MAX_COUNT: ${GUI_SESSION_MAX_COUNT:-1}
+      GUI_SESSION_TTL_MS: ${GUI_SESSION_TTL_MS:-600000}
+      GUI_SESSION_MEMORY_MB: ${GUI_SESSION_MEMORY_MB:-1024}
+      APK_JOB_MAX_COUNT: ${APK_JOB_MAX_COUNT:-1}
+      APK_JOB_MEMORY_MB: ${APK_JOB_MEMORY_MB:-1536}
+      APK_JOB_TIMEOUT_MS: ${APK_JOB_TIMEOUT_MS:-180000}
+      APK_JOB_TTL_MS: ${APK_JOB_TTL_MS:-1800000}
+      APK_JOB_MIN_RESERVATION_BYTES: ${APK_JOB_MIN_RESERVATION_BYTES:-67108864}
+      APK_JOB_MAX_RESERVATION_BYTES: ${APK_JOB_MAX_RESERVATION_BYTES:-10737418240}
+      APK_JOB_EXPANSION_MULTIPLIER: ${APK_JOB_EXPANSION_MULTIPLIER:-8}
+      ADMIN_DASHBOARD_TOKEN: ${ADMIN_DASHBOARD_TOKEN:-}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173}
+    ports:
+      - "127.0.0.1:${BACKEND_PORT:-3001}:3001"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ${WORKSPACE_HOST_PATH:-/var/lib/sk-coder/workspaces}:/var/lib/sk-coder/workspaces
+    depends_on:
+      runtime:
+        condition: service_completed_successfully
+      registry-proxy:
+        condition: service_started
+    restart: unless-stopped
+
+networks:
+  installer:
+    name: ${DEPENDENCY_INSTALL_NETWORK_NAME:-skcoder-installer}
+    internal: true
+  registry-egress:
+    name: ${REGISTRY_EGRESS_NETWORK_NAME:-skcoder-registry-egress}

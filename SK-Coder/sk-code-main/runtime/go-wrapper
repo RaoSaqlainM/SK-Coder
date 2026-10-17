@@ -1,0 +1,8 @@
+#!/bin/sh
+if [ -z "${GOTMPDIR:-}" ]; then
+  directory="${HOME:-/workspace}/.skcoder-go-tmp"
+  mkdir -p "$directory"
+  chmod 700 "$directory"
+  export GOTMPDIR="$directory"
+fi
+exec "${GO_REAL_BINARY:-/usr/bin/go}" "$@"
