@@ -1,3 +1,15 @@
+# Build stage
+FROM node:22-bookworm-slim AS build
+
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+RUN npm run build
+
+# Production stage
 FROM node:22-bookworm-slim
 
 # Install language runtimes and build tools
