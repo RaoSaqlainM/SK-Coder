@@ -18,7 +18,7 @@ export default function LoginPage() {
     await login(username, password, rememberMe);
 
     const params = new URLSearchParams(window.location.search);
-    const redirect = params.get("redirect") || "/admin";
+    const redirect = params.get("redirect") || "/";
     setLocation(redirect);
   };
 
