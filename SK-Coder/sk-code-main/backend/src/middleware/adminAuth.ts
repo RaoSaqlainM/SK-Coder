@@ -1,6 +1,6 @@
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
-import { ADMIN_USERNAME, JWT_SECRET } from "./backendConfig.js";
+import { ADMIN_USERNAME, JWT_SECRET } from "../lib/backendConfig.js";
 
 if (!JWT_SECRET || JWT_SECRET.length < 32) {
     throw new Error("JWT_SECRET must be at least 32 characters");
