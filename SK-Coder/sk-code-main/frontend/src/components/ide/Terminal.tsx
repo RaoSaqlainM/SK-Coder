@@ -17,6 +17,9 @@ import { isSameWorkspaceStagingFlight, type WorkspaceStagingFlight } from "@/lib
 import { getQueueStatus, subscribeToQueueStatus } from "@/lib/operationQueue";
 import { workspaceReconnectDelay } from "@/lib/workspaceReconnect";
 import { buildProjectMap, isSensitiveProjectPath, projectMapContext, redactContextText } from "@/lib/projectMap";
+import { startBrowserTerminal, type BrowserTerminal } from "@/lib/browserTerminalEngine";
+import { parseCommand, canBrowserHandle, shouldUseServer } from "@/lib/commandParser";
+import { checkWorkspaceAvailability, joinQueue } from "@/lib/workspaceQueue";
 type TermType = "shell" | "python" | "nodejs" | "java" | "ai";
 type TermLine = {
     id: string;
@@ -242,8 +245,8 @@ const WORKSPACE_COMMANDS = new Set([
     "npm", "npx", "pnpm", "yarn", "pip", "pip3", "git", "curl", "wget", "bash", "sh", "chmod", "rm", "cp", "mv", "find", "grep", "sed", "apt", "apk", "go", "cargo", "rustc", "javac",
 ]);
 function isWorkspaceCommand(input: string) {
-    const command = input.trim().split(/\s+/, 1)[0]?.toLowerCase();
-    return Boolean(command && WORKSPACE_COMMANDS.has(command));
+    const parsed = parseCommand(input);
+    return shouldUseServer(parsed);
 }
 function parseDependencyInstall(input: string): { manager: "npm" | "pnpm" | "yarn"; mode: "install" | "ci"; packages: string[] } | null {
     const match = input.trim().match(/^(npm|pnpm|yarn)\s+(install|i|ci|add)(?:\s+(.+))?$/i);

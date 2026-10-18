@@ -482,7 +482,7 @@ export default function PreviewPane() {
           </div>) : activeFile?.assetMimeType?.startsWith("image/") && assetPreviewUrl ? (<div style={{ width: "100%", height: "100%", background: "#0d1117", display: "grid", placeItems: "center", overflow: "auto" }}>
             <img src={assetPreviewUrl} alt={activeFile.name} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }}/>
           </div>) : activeFile?.assetMimeType?.startsWith("video/") && assetPreviewUrl ? (<div style={{ width: "100%", height: "100%", background: "#0d1117", display: "grid", placeItems: "center" }}>
-            <video src={assetPreviewUrl} controls style={{ maxWidth: "100%", maxHeight: "100%" }}/>
+            <video src={assetPreviewUrl} controls style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} preload="metadata"/>
           </div>) : activeFile?.assetMimeType?.startsWith("audio/") && assetPreviewUrl ? (<div style={{ width: "100%", height: "100%", background: "#0d1117", display: "grid", placeItems: "center", padding: "2rem" }}>
             <audio src={assetPreviewUrl} controls style={{ width: "min(640px, 100%)" }}/>
           </div>) : (<div className="preview-viewport-stage" ref={viewportStageRef}>

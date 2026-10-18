@@ -1,12 +1,14 @@
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { WORKSPACE_METADATA_PATH } from "./backendConfig.js";
+import { WORKSPACE_METADATA_PATH, TEMP_WORKSPACE_POOL_BYTES, PERSISTENT_WORKSPACE_POOL_BYTES } from "./backendConfig.js";
 export type RetentionMode = "three-days" | "four-hours";
+export type WorkspacePool = "temporary" | "persistent";
 const RETAINED_WORKSPACE_HOURS = 72;
 const SCHEDULED_DELETE_HOURS = 4;
 export type WorkspaceRecord = {
     id: string;
+    pool: WorkspacePool;
     terminalAccessHash: string;
     createdAt: number;
     lastHeartbeatAt: number;
@@ -50,18 +52,38 @@ function queuePersist() {
     writeQueue = writeQueue.then(() => persistRegistry());
     return writeQueue;
 }
+export async function getPoolUsage(pool: WorkspacePool): Promise<number> {
+    const registry = await readRegistry();
+    return registry.records
+        .filter((r) => r.pool === pool && r.state === "active")
+        .reduce((sum, r) => sum + r.quotaBytes, 0);
+}
+
 export async function createWorkspaceRecord(id: string, quotaBytes: number, retentionMode: RetentionMode = "three-days", terminalAccessHash = "", keepAlive = false) {
     const registry = await readRegistry();
     const now = Date.now();
-    const duration = retentionMode === "four-hours" ? SCHEDULED_DELETE_HOURS : RETAINED_WORKSPACE_HOURS;
+    
+    const tempUsage = await getPoolUsage("temporary");
+    let pool: WorkspacePool = "temporary";
+    
+    if (tempUsage + quotaBytes > TEMP_WORKSPACE_POOL_BYTES) {
+        const persistentUsage = await getPoolUsage("persistent");
+        if (persistentUsage + quotaBytes > PERSISTENT_WORKSPACE_POOL_BYTES) {
+            throw new Error("WORKSPACE_POOLS_FULL");
+        }
+        pool = "persistent";
+    }
+    
+    const duration = pool === "persistent" ? Infinity : (retentionMode === "four-hours" ? SCHEDULED_DELETE_HOURS : RETAINED_WORKSPACE_HOURS);
     const record: WorkspaceRecord = {
         id,
+        pool,
         terminalAccessHash,
         createdAt: now,
         lastHeartbeatAt: now,
-        expiresAt: now + duration * 60 * 60 * 1000,
+        expiresAt: pool === "persistent" ? Infinity : now + duration * 60 * 60 * 1000,
         retentionMode,
-        keepAlive,
+        keepAlive: pool === "persistent" ? true : keepAlive,
         quotaBytes,
         state: "active",
         deleteUndoUntil: null,
